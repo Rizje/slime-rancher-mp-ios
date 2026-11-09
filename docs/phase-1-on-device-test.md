@@ -45,6 +45,24 @@ anything fails.
 2. Install **Slime Rancher 2** (it must be the Steam version).
 3. Give it time: the download is several GB.
 
+**Faster: copy the game from your PC.** Madeira's downloader checks files already on disk against
+Steam's checksums and keeps every part that matches, so it only verifies instead of downloading.
+
+1. On the PC, make sure Steam has Slime Rancher 2 fully updated, with **no mods** in the folder.
+   It's in `Steam\steamapps\common\` (right-click the game in Steam → Manage → Browse local files).
+2. Copy that whole folder to the phone, using either:
+   - a **USB-C flash drive or SSD** (exFAT). Plug it into the iPhone and use the Files app. This is
+     the fastest option.
+   - a **shared folder**: share it on the PC, then on the iPhone use Files → **⋯** →
+     **Connect to Server** → `smb://<PC's IP>`.
+3. In Madeira, tap **Install** on Slime Rancher 2, then **pause** it as soon as it starts. This
+   creates the game's folder with the exact name Madeira expects.
+4. In Files, copy the game's contents into
+   **Madeira › wine › drive_c › Program Files (x86) › Steam › steamapps › common ›** that folder,
+   replacing what's there.
+5. Resume the install in Madeira. It should check the files for a few minutes, download only
+   what's different, then finish. Then **Repair installed files** isn't needed.
+
 ## C. Run the plain game (no mods)
 
 Open the game's details page and set:
