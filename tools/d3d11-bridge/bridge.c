@@ -10,27 +10,42 @@
  *   available ("Reverting to kGfxThreadingModeClientWorkerJobs").
  *
  * What it does
- *   - D3D11CreateDevice, D3D11CreateDeviceAndSwapChain and the other ordinary
- *     entry points go straight to the real d3d11.dll.
+ *   - D3D11CreateDevice, D3D11CreateDeviceAndSwapChain and D3D11CoreCreateDevice
+ *     go straight to the real d3d11.dll. The bridge exports exactly what DXMT's
+ *     d3d11.dll exports, so a program that probes for an export sees the same
+ *     answer with or without it.
  *   - D3D11On12CreateDevice first asks the real d3d11.dll. When that cannot make
  *     an 11-on-12 device, it returns a standalone D3D11 device instead. Unity
  *     only uses the 11-on-12 device briefly while it starts.
- *   - The D3D12 device passed to D3D11On12CreateDevice gets a guard on
- *     CheckFeatureSupport. A capability query the D3D12 layer does not know
- *     (E_INVALIDARG) is answered "not supported" (S_OK, zeroed data): Unity 6
- *     treats E_INVALIDARG for D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT as fatal.
- *     Queries whose E_INVALIDARG is a real answer about the caller's input
- *     (formats, shader model, root signature version, feature level list) are
- *     left alone, because a zeroed answer to those would be wrong.
+ *   - The D3D12 device passed to D3D11On12CreateDevice gets a few of its calls
+ *     wrapped:
+ *       CheckFeatureSupport: a capability query the D3D12 layer does not know
+ *         (E_INVALIDARG) is answered "not supported" (S_OK, zeroed data):
+ *         Unity 6 treats E_INVALIDARG for D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT
+ *         as fatal. Queries whose E_INVALIDARG is a real answer about the
+ *         caller's input (formats, shader model, root signature version,
+ *         feature level list) are left alone, because a zeroed answer to those
+ *         would be wrong.
+ *       CreateFence: madeira-d3d12 refuses fences with flags (shared,
+ *         cross-adapter, non-monitored) with E_NOTIMPL and no log line. Such a
+ *         fence is made without the flags instead; it works the same inside
+ *         the process and only cannot be shared.
+ *       The other object-creating calls (heaps, resources, descriptor heaps,
+ *         root signatures, command allocators and lists, pipeline states,
+ *         query heaps, command signatures, shared handles, residency) are
+ *         passed through unchanged, and a failure is written to the log with
+ *         its arguments. Unity stops with "d3d12: Device failed error (...)"
+ *         and "Unrecoverable GPU device error!" when one of them fails, and
+ *         madeira-d3d12 does not log every refusal, so this names the call.
  *
- *     The guard never writes to the D3D12 layer's memory. It copies the
- *     device's function table into this DLL, replaces CheckFeatureSupport in
- *     the copy and points the device object at the copy. Patching the table
- *     in place does not work in Madeira: madeira-d3d12 runs from a copy of
- *     its DLL in Madeira's JIT pool, and changing the protection of a page
- *     there (VirtualProtect) left the whole table reading as zeros, so the
- *     next call through it jumped to address 0 (version 2 of this bridge).
- *     Setting SR2_BRIDGE_GUARD=0 in the environment turns the guard off.
+ *     The bridge never writes to the D3D12 layer's memory. It copies the
+ *     device's function table into this DLL, replaces those calls in the copy
+ *     and points the device object at the copy. Patching the table in place
+ *     does not work in Madeira: madeira-d3d12 runs from a copy of its DLL in
+ *     Madeira's JIT pool, and changing the protection of a page there
+ *     (VirtualProtect) left the whole table reading as zeros, so the next call
+ *     through it jumped to address 0 (version 2 of this bridge).
+ *     Setting SR2_BRIDGE_GUARD=0 in the environment leaves the device alone.
  *
  * Where the real d3d11.dll is
  *   The system directory first, as Windows and Wine search. Madeira runs x64
@@ -40,8 +55,11 @@
  *   follows the same order and never takes itself or a DLL without
  *   D3D11CreateDevice.
  *
+ * Log
  *   Everything it does is written to C:\sr2-d3d12-bridge.log (at most a few
- *   hundred lines). Delete the DLL from the game folder to undo it.
+ *   hundred lines per run) and to the debugger output (OutputDebugStringA),
+ *   which Madeira copies into its own log, so "Get Help" files include it.
+ *   Delete the DLL from the game folder to undo everything.
  */
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
@@ -53,18 +71,72 @@
 #include <d3d11.h>
 #include <d3d12.h>
 
-#define BRIDGE_VERSION "3"
+#define BRIDGE_VERSION "4"
 #define BRIDGE_LOG_PATH "C:\\sr2-d3d12-bridge.log"
 #define BRIDGE_LOG_MAX_LINES 300
 #define BRIDGE_MAX_TABLES 8
 #define BRIDGE_MAX_GUARDED_SIZE 4096
 
-/* CheckFeatureSupport's slot in every ID3D12Device* table (they all extend ID3D12Device). */
-#define BRIDGE_CFS_SLOT (offsetof(ID3D12DeviceVtbl, CheckFeatureSupport) / sizeof(void *))
 /* Slots copied at least: madeira-d3d12's device table is an ID3D12Device10
  * table (79 slots) while it answers QueryInterface only up to ID3D12Device8. */
 #define BRIDGE_TABLE_MIN 79
 #define BRIDGE_TABLE_MAX 104   /* ID3D12Device16 */
+
+/* Slots in every ID3D12Device* function table, from Microsoft's d3d12.h
+ * (DirectX-Headers). The ID3D12Device and ID3D12Device1 ones are checked
+ * against MinGW's header below. */
+enum
+{
+    SLOT_CreateCommandQueue = 8,
+    SLOT_CreateCommandAllocator = 9,
+    SLOT_CreateGraphicsPipelineState = 10,
+    SLOT_CreateComputePipelineState = 11,
+    SLOT_CreateCommandList = 12,
+    SLOT_CheckFeatureSupport = 13,
+    SLOT_CreateDescriptorHeap = 14,
+    SLOT_CreateRootSignature = 16,
+    SLOT_CreateCommittedResource = 27,
+    SLOT_CreateHeap = 28,
+    SLOT_CreatePlacedResource = 29,
+    SLOT_CreateReservedResource = 30,
+    SLOT_CreateSharedHandle = 31,
+    SLOT_OpenSharedHandle = 32,
+    SLOT_MakeResident = 34,
+    SLOT_Evict = 35,
+    SLOT_CreateFence = 36,
+    SLOT_GetDeviceRemovedReason = 37,
+    SLOT_CreateQueryHeap = 39,
+    SLOT_CreateCommandSignature = 41,
+    SLOT_CreatePipelineLibrary = 44,      /* ID3D12Device1 */
+    SLOT_CreatePipelineState = 47,        /* ID3D12Device2 */
+    SLOT_CreateCommandList1 = 51,         /* ID3D12Device4 */
+    SLOT_CreateCommittedResource1 = 53,
+    SLOT_CreateHeap1 = 54,
+    SLOT_CreateCommittedResource2 = 69,   /* ID3D12Device8 */
+    SLOT_CreatePlacedResource1 = 70,
+};
+#define BRIDGE_SLOT_OF(method) (offsetof(ID3D12Device1Vtbl, method) / sizeof(void *))
+_Static_assert(BRIDGE_SLOT_OF(CreateCommandQueue) == SLOT_CreateCommandQueue, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateCommandAllocator) == SLOT_CreateCommandAllocator, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateGraphicsPipelineState) == SLOT_CreateGraphicsPipelineState, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateComputePipelineState) == SLOT_CreateComputePipelineState, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateCommandList) == SLOT_CreateCommandList, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CheckFeatureSupport) == SLOT_CheckFeatureSupport, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateDescriptorHeap) == SLOT_CreateDescriptorHeap, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateRootSignature) == SLOT_CreateRootSignature, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateCommittedResource) == SLOT_CreateCommittedResource, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateHeap) == SLOT_CreateHeap, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreatePlacedResource) == SLOT_CreatePlacedResource, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateReservedResource) == SLOT_CreateReservedResource, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateSharedHandle) == SLOT_CreateSharedHandle, "slot");
+_Static_assert(BRIDGE_SLOT_OF(OpenSharedHandle) == SLOT_OpenSharedHandle, "slot");
+_Static_assert(BRIDGE_SLOT_OF(MakeResident) == SLOT_MakeResident, "slot");
+_Static_assert(BRIDGE_SLOT_OF(Evict) == SLOT_Evict, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateFence) == SLOT_CreateFence, "slot");
+_Static_assert(BRIDGE_SLOT_OF(GetDeviceRemovedReason) == SLOT_GetDeviceRemovedReason, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateQueryHeap) == SLOT_CreateQueryHeap, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreateCommandSignature) == SLOT_CreateCommandSignature, "slot");
+_Static_assert(BRIDGE_SLOT_OF(CreatePipelineLibrary) == SLOT_CreatePipelineLibrary, "slot");
 
 /* ID3D12Device and its later versions with the size of each one's function
  * table, from Microsoft's DirectX-Headers (d3d12.h), written out so no import
@@ -96,9 +168,6 @@ typedef HRESULT (WINAPI *bridge_on12_fn)(IUnknown *, UINT, const D3D_FEATURE_LEV
                                          ID3D11DeviceContext **, D3D_FEATURE_LEVEL *);
 typedef HRESULT (WINAPI *bridge_core_create_fn)(IDXGIFactory *, IDXGIAdapter *, UINT,
                                                 const D3D_FEATURE_LEVEL *, UINT, ID3D11Device **);
-typedef HRESULT (WINAPI *bridge_from_dxgi_device_fn)(IDXGIDevice *, IUnknown **);
-typedef HRESULT (WINAPI *bridge_from_dxgi_surface_fn)(IDXGISurface *, IUnknown **);
-typedef HRESULT (STDMETHODCALLTYPE *bridge_cfs_fn)(ID3D12Device *, D3D12_FEATURE, void *, UINT);
 
 static HMODULE bridge_self;
 static HMODULE bridge_real;
@@ -112,9 +181,9 @@ static LONG bridge_log_lines;
 struct bridge_table
 {
     void **original;
-    bridge_cfs_fn real;                  /* the original CheckFeatureSupport */
     UINT count;                          /* slots copied */
-    void *slots[BRIDGE_TABLE_MAX];       /* the copy the device object points at */
+    void *real_slots[BRIDGE_TABLE_MAX];  /* the implementation's functions, as copied */
+    void *slots[BRIDGE_TABLE_MAX];       /* the table the device object points at */
 };
 static SRWLOCK bridge_table_lock = SRWLOCK_INIT;
 static struct bridge_table bridge_tables[BRIDGE_MAX_TABLES];
@@ -123,30 +192,28 @@ static volatile LONG bridge_ntables;
 static volatile LONG bridge_noted_features[64];
 static volatile LONG bridge_nnoted;
 
-static void bridge_log(const char *fmt, ...)
+static void bridge_log_v(BOOL to_debugger, const char *fmt, va_list args)
 {
-    char line[700];
+    char message[600], line[700];
     SYSTEMTIME now;
-    va_list args;
-    int used, more;
+    int used;
     HANDLE file;
     DWORD written;
 
     if (InterlockedIncrement(&bridge_log_lines) > BRIDGE_LOG_MAX_LINES) return;
+    if (vsnprintf(message, sizeof(message), fmt, args) < 0) return;
 
     GetLocalTime(&now);
-    used = snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u [pid %lu tid %lu] ",
+    used = snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u [pid %lu tid %lu] %s\r\n",
                     now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
-                    GetCurrentProcessId(), GetCurrentThreadId());
+                    GetCurrentProcessId(), GetCurrentThreadId(), message);
     if (used < 0) return;
-    va_start(args, fmt);
-    more = vsnprintf(line + used, sizeof(line) - used - 2, fmt, args);
-    va_end(args);
-    if (more < 0) return;
-    used += more;
-    if (used > (int)sizeof(line) - 2) used = sizeof(line) - 2;
-    line[used++] = '\r';
-    line[used++] = '\n';
+    if (used >= (int)sizeof(line))
+    {
+        used = sizeof(line) - 1;
+        line[used - 2] = '\r';
+        line[used - 1] = '\n';
+    }
 
     AcquireSRWLockExclusive(&bridge_log_lock);
     file = CreateFileA(BRIDGE_LOG_PATH, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -157,6 +224,31 @@ static void bridge_log(const char *fmt, ...)
         CloseHandle(file);
     }
     ReleaseSRWLockExclusive(&bridge_log_lock);
+
+    if (to_debugger)
+    {
+        snprintf(line, sizeof(line), "[sr2-d3d12-bridge] %s\n", message);
+        OutputDebugStringA(line);
+    }
+}
+
+static void bridge_log(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    bridge_log_v(TRUE, fmt, args);
+    va_end(args);
+}
+
+/* For DllMain: the file only. */
+static void bridge_log_quiet(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    bridge_log_v(FALSE, fmt, args);
+    va_end(args);
 }
 
 /* ---- the real d3d11.dll ------------------------------------------------- */
@@ -246,7 +338,50 @@ static BOOL bridge_first_time(const char *what, LONG *counter)
     return FALSE;
 }
 
-/* ---- CheckFeatureSupport guard ------------------------------------------ */
+/* ---- the copied D3D12 device table -------------------------------------- */
+
+static struct bridge_table *bridge_table_of(void **slots)
+{
+    LONG i, n = bridge_ntables;
+
+    for (i = 0; i < n; i++) if (bridge_tables[i].slots == slots) return &bridge_tables[i];
+    return NULL;
+}
+
+/* The implementation's own function for a slot of this object's table. */
+static void *bridge_real_slot(void *object, UINT slot)
+{
+    struct bridge_table *table = bridge_table_of(*(void ***)object);
+
+    return table && slot < table->count ? table->real_slots[slot] : NULL;
+}
+
+/* Declares `real` (the implementation's function) and `hr`, and calls it. */
+#define BRIDGE_FORWARD(slot, fn_type, call_args)                         \
+    fn_type real = (fn_type)bridge_real_slot((void *)device, (slot));    \
+    HRESULT hr;                                                          \
+    if (!real) return E_UNEXPECTED;                                      \
+    hr = real call_args;
+
+/* At most `limit` lines for each kind of call. */
+static BOOL bridge_count(LONG *counter, LONG limit)
+{
+    return InterlockedIncrement(counter) <= limit;
+}
+
+static const char *bridge_desc(char *out, size_t size, const D3D12_RESOURCE_DESC *desc)
+{
+    if (!desc)
+        snprintf(out, size, "no description");
+    else
+        snprintf(out, size, "dimension %d, %llux%ux%u, %u mips, format %d, %u samples, layout %d, flags %#x",
+                 (int)desc->Dimension, (unsigned long long)desc->Width, desc->Height,
+                 (unsigned)desc->DepthOrArraySize, (unsigned)desc->MipLevels, (int)desc->Format,
+                 desc->SampleDesc.Count, (int)desc->Layout, (unsigned)desc->Flags);
+    return out;
+}
+
+/* ---- CheckFeatureSupport ---- */
 
 /* Queries whose all-zero answer would be wrong rather than "not supported":
  * their E_INVALIDARG says something about the caller's input (an unknown
@@ -283,22 +418,11 @@ static void bridge_note_feature(UINT feature, UINT size)
                "answered \"not supported\"", feature, size);
 }
 
-static struct bridge_table *bridge_table_of(void **slots)
+typedef HRESULT (STDMETHODCALLTYPE *bridge_cfs_fn)(ID3D12Device *, D3D12_FEATURE, void *, UINT);
+static HRESULT STDMETHODCALLTYPE bridge_CheckFeatureSupport(ID3D12Device *device, D3D12_FEATURE feature,
+                                                            void *data, UINT size)
 {
-    LONG i, n = bridge_ntables;
-
-    for (i = 0; i < n; i++) if (bridge_tables[i].slots == slots) return &bridge_tables[i];
-    return NULL;
-}
-
-static HRESULT STDMETHODCALLTYPE bridge_check_feature_support(ID3D12Device *device, D3D12_FEATURE feature,
-                                                              void *data, UINT size)
-{
-    struct bridge_table *table = bridge_table_of(*(void ***)device);
-    HRESULT hr;
-
-    if (!table) return E_INVALIDARG;   /* only reachable through a copied table */
-    hr = table->real(device, feature, data, size);
+    BRIDGE_FORWARD(SLOT_CheckFeatureSupport, bridge_cfs_fn, (device, feature, data, size))
     if (hr == E_INVALIDARG && data && size && size <= BRIDGE_MAX_GUARDED_SIZE &&
         !bridge_feature_keeps_errors((UINT)feature))
     {
@@ -308,6 +432,429 @@ static HRESULT STDMETHODCALLTYPE bridge_check_feature_support(ID3D12Device *devi
     }
     return hr;
 }
+
+/* ---- CreateFence ---- */
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_fence_fn)(ID3D12Device *, UINT64, D3D12_FENCE_FLAGS,
+                                                            REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateFence(ID3D12Device *device, UINT64 initial, D3D12_FENCE_FLAGS flags,
+                                                    REFIID riid, void **out)
+{
+    static LONG fails, retries;
+    BRIDGE_FORWARD(SLOT_CreateFence, bridge_create_fence_fn, (device, initial, flags, riid, out))
+    if (hr == E_NOTIMPL && flags != D3D12_FENCE_FLAG_NONE)
+    {
+        HRESULT plain = real(device, initial, D3D12_FENCE_FLAG_NONE, riid, out);
+        if (bridge_count(&retries, 6))
+            bridge_log("CreateFence(flags %#x) was refused (E_NOTIMPL): made an ordinary fence instead -> %#lx",
+                       (unsigned)flags, (unsigned long)plain);
+        return plain;
+    }
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateFence(initial %llu, flags %#x) -> %#lx",
+                   (unsigned long long)initial, (unsigned)flags, (unsigned long)hr);
+    return hr;
+}
+
+/* ---- calls that are only watched ---- */
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_queue_fn)(ID3D12Device *, const D3D12_COMMAND_QUEUE_DESC *,
+                                                            REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommandQueue(ID3D12Device *device, const D3D12_COMMAND_QUEUE_DESC *desc,
+                                                           REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateCommandQueue, bridge_create_queue_fn, (device, desc, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateCommandQueue(type %d, flags %#x) -> %#lx", desc ? (int)desc->Type : -1,
+                   desc ? (unsigned)desc->Flags : 0u, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_allocator_fn)(ID3D12Device *, D3D12_COMMAND_LIST_TYPE, REFIID,
+                                                                void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommandAllocator(ID3D12Device *device, D3D12_COMMAND_LIST_TYPE type,
+                                                               REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateCommandAllocator, bridge_create_allocator_fn, (device, type, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateCommandAllocator(type %d) -> %#lx", (int)type, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_graphics_pso_fn)(ID3D12Device *,
+                                                                   const D3D12_GRAPHICS_PIPELINE_STATE_DESC *,
+                                                                   REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateGraphicsPipelineState(ID3D12Device *device,
+                                                                    const D3D12_GRAPHICS_PIPELINE_STATE_DESC *desc,
+                                                                    REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateGraphicsPipelineState, bridge_create_graphics_pso_fn, (device, desc, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreateGraphicsPipelineState(VS %lu bytes, PS %lu bytes, %u targets) -> %#lx",
+                   desc ? (unsigned long)desc->VS.BytecodeLength : 0ul,
+                   desc ? (unsigned long)desc->PS.BytecodeLength : 0ul,
+                   desc ? desc->NumRenderTargets : 0u, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_compute_pso_fn)(ID3D12Device *,
+                                                                  const D3D12_COMPUTE_PIPELINE_STATE_DESC *,
+                                                                  REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateComputePipelineState(ID3D12Device *device,
+                                                                   const D3D12_COMPUTE_PIPELINE_STATE_DESC *desc,
+                                                                   REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateComputePipelineState, bridge_create_compute_pso_fn, (device, desc, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreateComputePipelineState(CS %lu bytes) -> %#lx",
+                   desc ? (unsigned long)desc->CS.BytecodeLength : 0ul, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_list_fn)(ID3D12Device *, UINT, D3D12_COMMAND_LIST_TYPE,
+                                                           ID3D12CommandAllocator *, ID3D12PipelineState *,
+                                                           REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommandList(ID3D12Device *device, UINT node, D3D12_COMMAND_LIST_TYPE type,
+                                                          ID3D12CommandAllocator *allocator, ID3D12PipelineState *pso,
+                                                          REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateCommandList, bridge_create_list_fn, (device, node, type, allocator, pso, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateCommandList(type %d) -> %#lx", (int)type, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_descriptor_heap_fn)(ID3D12Device *,
+                                                                      const D3D12_DESCRIPTOR_HEAP_DESC *,
+                                                                      REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateDescriptorHeap(ID3D12Device *device, const D3D12_DESCRIPTOR_HEAP_DESC *desc,
+                                                             REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateDescriptorHeap, bridge_create_descriptor_heap_fn, (device, desc, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateDescriptorHeap(type %d, %u descriptors, flags %#x) -> %#lx",
+                   desc ? (int)desc->Type : -1, desc ? desc->NumDescriptors : 0u,
+                   desc ? (unsigned)desc->Flags : 0u, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_root_signature_fn)(ID3D12Device *, UINT, const void *, SIZE_T,
+                                                                     REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateRootSignature(ID3D12Device *device, UINT node, const void *blob,
+                                                            SIZE_T size, REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateRootSignature, bridge_create_root_signature_fn, (device, node, blob, size, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateRootSignature(%lu bytes) -> %#lx", (unsigned long)size, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_committed_fn)(ID3D12Device *, const D3D12_HEAP_PROPERTIES *,
+                                                                D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC *,
+                                                                D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE *,
+                                                                REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommittedResource(ID3D12Device *device, const D3D12_HEAP_PROPERTIES *props,
+                                                                D3D12_HEAP_FLAGS heap_flags,
+                                                                const D3D12_RESOURCE_DESC *desc,
+                                                                D3D12_RESOURCE_STATES state,
+                                                                const D3D12_CLEAR_VALUE *clear, REFIID riid, void **out)
+{
+    static LONG fails;
+    char text[200];
+    BRIDGE_FORWARD(SLOT_CreateCommittedResource, bridge_create_committed_fn,
+                   (device, props, heap_flags, desc, state, clear, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreateCommittedResource(heap type %d, heap flags %#x, %s, state %#x) -> %#lx",
+                   props ? (int)props->Type : -1, (unsigned)heap_flags, bridge_desc(text, sizeof(text), desc),
+                   (unsigned)state, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_heap_fn)(ID3D12Device *, const D3D12_HEAP_DESC *, REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateHeap(ID3D12Device *device, const D3D12_HEAP_DESC *desc, REFIID riid,
+                                                   void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateHeap, bridge_create_heap_fn, (device, desc, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateHeap(%llu bytes, heap type %d, alignment %llu, flags %#x) -> %#lx",
+                   desc ? (unsigned long long)desc->SizeInBytes : 0ull, desc ? (int)desc->Properties.Type : -1,
+                   desc ? (unsigned long long)desc->Alignment : 0ull, desc ? (unsigned)desc->Flags : 0u,
+                   (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_placed_fn)(ID3D12Device *, ID3D12Heap *, UINT64,
+                                                             const D3D12_RESOURCE_DESC *, D3D12_RESOURCE_STATES,
+                                                             const D3D12_CLEAR_VALUE *, REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreatePlacedResource(ID3D12Device *device, ID3D12Heap *heap, UINT64 offset,
+                                                             const D3D12_RESOURCE_DESC *desc,
+                                                             D3D12_RESOURCE_STATES state,
+                                                             const D3D12_CLEAR_VALUE *clear, REFIID riid, void **out)
+{
+    static LONG fails;
+    char text[200];
+    BRIDGE_FORWARD(SLOT_CreatePlacedResource, bridge_create_placed_fn,
+                   (device, heap, offset, desc, state, clear, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreatePlacedResource(offset %llu, %s, state %#x) -> %#lx", (unsigned long long)offset,
+                   bridge_desc(text, sizeof(text), desc), (unsigned)state, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_reserved_fn)(ID3D12Device *, const D3D12_RESOURCE_DESC *,
+                                                               D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE *,
+                                                               REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateReservedResource(ID3D12Device *device, const D3D12_RESOURCE_DESC *desc,
+                                                               D3D12_RESOURCE_STATES state,
+                                                               const D3D12_CLEAR_VALUE *clear, REFIID riid, void **out)
+{
+    static LONG fails;
+    char text[200];
+    BRIDGE_FORWARD(SLOT_CreateReservedResource, bridge_create_reserved_fn, (device, desc, state, clear, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateReservedResource(%s) -> %#lx", bridge_desc(text, sizeof(text), desc),
+                   (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_shared_handle_fn)(ID3D12Device *, ID3D12DeviceChild *,
+                                                                    const SECURITY_ATTRIBUTES *, DWORD,
+                                                                    const WCHAR *, HANDLE *);
+static HRESULT STDMETHODCALLTYPE bridge_CreateSharedHandle(ID3D12Device *device, ID3D12DeviceChild *object,
+                                                           const SECURITY_ATTRIBUTES *attributes, DWORD access,
+                                                           const WCHAR *name, HANDLE *handle)
+{
+    static LONG calls;
+    BRIDGE_FORWARD(SLOT_CreateSharedHandle, bridge_create_shared_handle_fn,
+                   (device, object, attributes, access, name, handle))
+    if (bridge_count(&calls, 6))
+        bridge_log("CreateSharedHandle(object %p, access %#lx, %s) -> %#lx", (void *)object, (unsigned long)access,
+                   name ? "named" : "unnamed", (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_open_shared_handle_fn)(ID3D12Device *, HANDLE, REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_OpenSharedHandle(ID3D12Device *device, HANDLE handle, REFIID riid, void **out)
+{
+    static LONG calls;
+    BRIDGE_FORWARD(SLOT_OpenSharedHandle, bridge_open_shared_handle_fn, (device, handle, riid, out))
+    if (bridge_count(&calls, 6))
+        bridge_log("OpenSharedHandle(%p) -> %#lx", (void *)handle, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_residency_fn)(ID3D12Device *, UINT, ID3D12Pageable *const *);
+static HRESULT STDMETHODCALLTYPE bridge_MakeResident(ID3D12Device *device, UINT count, ID3D12Pageable *const *objects)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_MakeResident, bridge_residency_fn, (device, count, objects))
+    if (FAILED(hr) && bridge_count(&fails, 4))
+        bridge_log("FAILED MakeResident(%u objects) -> %#lx", count, (unsigned long)hr);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE bridge_Evict(ID3D12Device *device, UINT count, ID3D12Pageable *const *objects)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_Evict, bridge_residency_fn, (device, count, objects))
+    if (FAILED(hr) && bridge_count(&fails, 4))
+        bridge_log("FAILED Evict(%u objects) -> %#lx", count, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_removed_reason_fn)(ID3D12Device *);
+static HRESULT STDMETHODCALLTYPE bridge_GetDeviceRemovedReason(ID3D12Device *device)
+{
+    static LONG said;
+    BRIDGE_FORWARD(SLOT_GetDeviceRemovedReason, bridge_removed_reason_fn, (device))
+    if (hr != S_OK && bridge_count(&said, 3))
+        bridge_log("GetDeviceRemovedReason -> %#lx", (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_query_heap_fn)(ID3D12Device *, const D3D12_QUERY_HEAP_DESC *,
+                                                                 REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateQueryHeap(ID3D12Device *device, const D3D12_QUERY_HEAP_DESC *desc,
+                                                        REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateQueryHeap, bridge_create_query_heap_fn, (device, desc, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateQueryHeap(type %d, %u queries) -> %#lx", desc ? (int)desc->Type : -1,
+                   desc ? desc->Count : 0u, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_command_signature_fn)(ID3D12Device *,
+                                                                        const D3D12_COMMAND_SIGNATURE_DESC *,
+                                                                        ID3D12RootSignature *, REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommandSignature(ID3D12Device *device,
+                                                               const D3D12_COMMAND_SIGNATURE_DESC *desc,
+                                                               ID3D12RootSignature *root_signature,
+                                                               REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateCommandSignature, bridge_create_command_signature_fn,
+                   (device, desc, root_signature, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateCommandSignature(stride %u, %u arguments, root signature %p) -> %#lx",
+                   desc ? desc->ByteStride : 0u, desc ? desc->NumArgumentDescs : 0u, (void *)root_signature,
+                   (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_pipeline_library_fn)(ID3D12Device *, const void *, SIZE_T,
+                                                                       REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreatePipelineLibrary(ID3D12Device *device, const void *blob, SIZE_T size,
+                                                              REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreatePipelineLibrary, bridge_create_pipeline_library_fn, (device, blob, size, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 3))
+        bridge_log("FAILED CreatePipelineLibrary(%lu-byte blob) -> %#lx", (unsigned long)size, (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_pipeline_state_fn)(ID3D12Device *, const void *, REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreatePipelineState(ID3D12Device *device, const void *stream, REFIID riid,
+                                                            void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreatePipelineState, bridge_create_pipeline_state_fn, (device, stream, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreatePipelineState (stream) -> %#lx", (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_list1_fn)(ID3D12Device *, UINT, D3D12_COMMAND_LIST_TYPE, UINT,
+                                                            REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommandList1(ID3D12Device *device, UINT node,
+                                                           D3D12_COMMAND_LIST_TYPE type, UINT flags,
+                                                           REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateCommandList1, bridge_create_list1_fn, (device, node, type, flags, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateCommandList1(type %d, flags %#x) -> %#lx", (int)type, flags, (unsigned long)hr);
+    return hr;
+}
+
+/* The protected-session pointer and D3D12_RESOURCE_DESC1 are not in MinGW's
+ * header; DESC1 starts with D3D12_RESOURCE_DESC's fields, which is all the
+ * log reads. */
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_committed1_fn)(ID3D12Device *, const D3D12_HEAP_PROPERTIES *,
+                                                                 D3D12_HEAP_FLAGS, const void *,
+                                                                 D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE *,
+                                                                 void *, REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommittedResource1(ID3D12Device *device,
+                                                                 const D3D12_HEAP_PROPERTIES *props,
+                                                                 D3D12_HEAP_FLAGS heap_flags, const void *desc,
+                                                                 D3D12_RESOURCE_STATES state,
+                                                                 const D3D12_CLEAR_VALUE *clear, void *session,
+                                                                 REFIID riid, void **out)
+{
+    static LONG fails;
+    char text[200];
+    BRIDGE_FORWARD(SLOT_CreateCommittedResource1, bridge_create_committed1_fn,
+                   (device, props, heap_flags, desc, state, clear, session, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreateCommittedResource1(heap type %d, heap flags %#x, %s, protected %s) -> %#lx",
+                   props ? (int)props->Type : -1, (unsigned)heap_flags,
+                   bridge_desc(text, sizeof(text), (const D3D12_RESOURCE_DESC *)desc), session ? "yes" : "no",
+                   (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_heap1_fn)(ID3D12Device *, const D3D12_HEAP_DESC *, void *,
+                                                            REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreateHeap1(ID3D12Device *device, const D3D12_HEAP_DESC *desc, void *session,
+                                                    REFIID riid, void **out)
+{
+    static LONG fails;
+    BRIDGE_FORWARD(SLOT_CreateHeap1, bridge_create_heap1_fn, (device, desc, session, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 6))
+        bridge_log("FAILED CreateHeap1(%llu bytes, heap type %d, flags %#x, protected %s) -> %#lx",
+                   desc ? (unsigned long long)desc->SizeInBytes : 0ull, desc ? (int)desc->Properties.Type : -1,
+                   desc ? (unsigned)desc->Flags : 0u, session ? "yes" : "no", (unsigned long)hr);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE bridge_CreateCommittedResource2(ID3D12Device *device,
+                                                                 const D3D12_HEAP_PROPERTIES *props,
+                                                                 D3D12_HEAP_FLAGS heap_flags, const void *desc,
+                                                                 D3D12_RESOURCE_STATES state,
+                                                                 const D3D12_CLEAR_VALUE *clear, void *session,
+                                                                 REFIID riid, void **out)
+{
+    static LONG fails;
+    char text[200];
+    BRIDGE_FORWARD(SLOT_CreateCommittedResource2, bridge_create_committed1_fn,
+                   (device, props, heap_flags, desc, state, clear, session, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreateCommittedResource2(heap type %d, heap flags %#x, %s, protected %s) -> %#lx",
+                   props ? (int)props->Type : -1, (unsigned)heap_flags,
+                   bridge_desc(text, sizeof(text), (const D3D12_RESOURCE_DESC *)desc), session ? "yes" : "no",
+                   (unsigned long)hr);
+    return hr;
+}
+
+typedef HRESULT (STDMETHODCALLTYPE *bridge_create_placed1_fn)(ID3D12Device *, ID3D12Heap *, UINT64, const void *,
+                                                              D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE *,
+                                                              REFIID, void **);
+static HRESULT STDMETHODCALLTYPE bridge_CreatePlacedResource1(ID3D12Device *device, ID3D12Heap *heap, UINT64 offset,
+                                                              const void *desc, D3D12_RESOURCE_STATES state,
+                                                              const D3D12_CLEAR_VALUE *clear, REFIID riid, void **out)
+{
+    static LONG fails;
+    char text[200];
+    BRIDGE_FORWARD(SLOT_CreatePlacedResource1, bridge_create_placed1_fn,
+                   (device, heap, offset, desc, state, clear, riid, out))
+    if (FAILED(hr) && bridge_count(&fails, 8))
+        bridge_log("FAILED CreatePlacedResource1(offset %llu, %s) -> %#lx", (unsigned long long)offset,
+                   bridge_desc(text, sizeof(text), (const D3D12_RESOURCE_DESC *)desc), (unsigned long)hr);
+    return hr;
+}
+
+static const struct { UINT slot; void *wrapper; } bridge_wrappers[] =
+{
+    { SLOT_CheckFeatureSupport, (void *)bridge_CheckFeatureSupport },
+    { SLOT_CreateFence, (void *)bridge_CreateFence },
+    { SLOT_CreateCommandQueue, (void *)bridge_CreateCommandQueue },
+    { SLOT_CreateCommandAllocator, (void *)bridge_CreateCommandAllocator },
+    { SLOT_CreateGraphicsPipelineState, (void *)bridge_CreateGraphicsPipelineState },
+    { SLOT_CreateComputePipelineState, (void *)bridge_CreateComputePipelineState },
+    { SLOT_CreateCommandList, (void *)bridge_CreateCommandList },
+    { SLOT_CreateDescriptorHeap, (void *)bridge_CreateDescriptorHeap },
+    { SLOT_CreateRootSignature, (void *)bridge_CreateRootSignature },
+    { SLOT_CreateCommittedResource, (void *)bridge_CreateCommittedResource },
+    { SLOT_CreateHeap, (void *)bridge_CreateHeap },
+    { SLOT_CreatePlacedResource, (void *)bridge_CreatePlacedResource },
+    { SLOT_CreateReservedResource, (void *)bridge_CreateReservedResource },
+    { SLOT_CreateSharedHandle, (void *)bridge_CreateSharedHandle },
+    { SLOT_OpenSharedHandle, (void *)bridge_OpenSharedHandle },
+    { SLOT_MakeResident, (void *)bridge_MakeResident },
+    { SLOT_Evict, (void *)bridge_Evict },
+    { SLOT_GetDeviceRemovedReason, (void *)bridge_GetDeviceRemovedReason },
+    { SLOT_CreateQueryHeap, (void *)bridge_CreateQueryHeap },
+    { SLOT_CreateCommandSignature, (void *)bridge_CreateCommandSignature },
+    { SLOT_CreatePipelineLibrary, (void *)bridge_CreatePipelineLibrary },
+    { SLOT_CreatePipelineState, (void *)bridge_CreatePipelineState },
+    { SLOT_CreateCommandList1, (void *)bridge_CreateCommandList1 },
+    { SLOT_CreateCommittedResource1, (void *)bridge_CreateCommittedResource1 },
+    { SLOT_CreateHeap1, (void *)bridge_CreateHeap1 },
+    { SLOT_CreateCommittedResource2, (void *)bridge_CreateCommittedResource2 },
+    { SLOT_CreatePlacedResource1, (void *)bridge_CreatePlacedResource1 },
+};
+
+/* ---- installing the copy ---- */
 
 /* How many slots the object's table has at least: the newest ID3D12Device
  * version it answers for with the same pointer, and never fewer than
@@ -332,16 +879,16 @@ static UINT bridge_table_size(IUnknown *object, int *newest)
     return slots;
 }
 
-/* Points the object at a copy of its function table in which
- * CheckFeatureSupport is the guard. Only the object's own first field (its
- * table pointer, in ordinary heap memory) is written. */
+/* Points the object at a copy of its function table with the wrappers above
+ * in it. Only the object's own first field (its table pointer, in ordinary
+ * heap memory) is written. */
 static void bridge_guard_object(IUnknown *object)
 {
     void **original = *(void ***)object;
     struct bridge_table *table;
     char name[8] = "";
     int newest;
-    UINT count;
+    UINT count, k, wrapped = 0;
     LONG i, n;
 
     if (bridge_table_of(original)) return;   /* already guarded */
@@ -356,10 +903,11 @@ static void bridge_guard_object(IUnknown *object)
     {
         table = &bridge_tables[n];
         table->original = original;
-        table->real = (bridge_cfs_fn)original[BRIDGE_CFS_SLOT];
         table->count = count;
+        memcpy(table->real_slots, original, count * sizeof(void *));
         memcpy(table->slots, original, count * sizeof(void *));
-        table->slots[BRIDGE_CFS_SLOT] = (void *)bridge_check_feature_support;
+        for (k = 0; k < sizeof(bridge_wrappers) / sizeof(bridge_wrappers[0]); k++)
+            if (bridge_wrappers[k].slot < count) table->slots[bridge_wrappers[k].slot] = bridge_wrappers[k].wrapper;
         MemoryBarrier();
         bridge_ntables = n + 1;   /* published before the object can reach the copy */
         MemoryBarrier();
@@ -372,10 +920,12 @@ static void bridge_guard_object(IUnknown *object)
         bridge_log("too many D3D12 device tables; device %p left unguarded", (void *)object);
         return;
     }
+    for (k = 0; k < sizeof(bridge_wrappers) / sizeof(bridge_wrappers[0]); k++)
+        if (bridge_wrappers[k].slot < table->count) wrapped++;
     if (newest > 0) snprintf(name, sizeof(name), "%d", newest);
-    bridge_log("feature-query guard on D3D12 device %p: its table %p copied to %p (%u slots; "
-               "it answers up to ID3D12Device%s)", (void *)object, (void *)original,
-               (void *)table->slots, count, name);
+    bridge_log("D3D12 device %p: its table %p copied to %p (%u slots; it answers up to ID3D12Device%s); "
+               "%u calls wrapped", (void *)object, (void *)original, (void *)table->slots, table->count, name,
+               wrapped);
 }
 
 static void bridge_guard_device(IUnknown *unknown)
@@ -385,7 +935,7 @@ static void bridge_guard_device(IUnknown *unknown)
 
     if (GetEnvironmentVariableA("SR2_BRIDGE_GUARD", value, sizeof(value)) && value[0] == '0')
     {
-        bridge_log("feature-query guard off (SR2_BRIDGE_GUARD=0)");
+        bridge_log("D3D12 device left alone (SR2_BRIDGE_GUARD=0)");
         return;
     }
     if (!unknown)
@@ -514,24 +1064,6 @@ HRESULT WINAPI bridge_D3D11CoreCreateDevice(IDXGIFactory *factory, IDXGIAdapter 
     return real(factory, adapter, flags, levels, level_count, device);
 }
 
-HRESULT WINAPI bridge_CreateDirect3D11DeviceFromDXGIDevice(IDXGIDevice *dxgi_device, IUnknown **graphics_device)
-{
-    bridge_from_dxgi_device_fn real =
-        BRIDGE_REAL(bridge_from_dxgi_device_fn, "CreateDirect3D11DeviceFromDXGIDevice");
-
-    if (!real) return E_NOTIMPL;
-    return real(dxgi_device, graphics_device);
-}
-
-HRESULT WINAPI bridge_CreateDirect3D11SurfaceFromDXGISurface(IDXGISurface *dxgi_surface, IUnknown **graphics_surface)
-{
-    bridge_from_dxgi_surface_fn real =
-        BRIDGE_REAL(bridge_from_dxgi_surface_fn, "CreateDirect3D11SurfaceFromDXGISurface");
-
-    if (!real) return E_NOTIMPL;
-    return real(dxgi_surface, graphics_surface);
-}
-
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
 {
     (void)reserved;
@@ -541,7 +1073,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, void *reserved)
         DisableThreadLibraryCalls(instance);
         /* Tells "the bridge was loaded but Unity never asked for 11-on-12"
          * apart from "the bridge was never loaded". */
-        bridge_log("sr2-d3d12-bridge %s loaded", BRIDGE_VERSION);
+        bridge_log_quiet("sr2-d3d12-bridge %s loaded", BRIDGE_VERSION);
     }
     return TRUE;
 }

@@ -16,9 +16,14 @@
  *     "not supported" with zeroed data;
  *   - SHADER_MODEL and FORMAT_INFO errors pass through untouched;
  *   - answers that succeed pass through untouched;
+ *   - a fence with flags, which madeira-d3d12 refuses with E_NOTIMPL, is made
+ *     again without them;
+ *   - other failures (a bundle command allocator here) pass through unchanged
+ *     and are logged by name;
  *   - a second D3D11On12CreateDevice does not wrap twice;
  *   - references stay balanced;
- *   - SR2_BRIDGE_GUARD=0 leaves a device alone.
+ *   - SR2_BRIDGE_GUARD=0 leaves a device alone;
+ *   - the exports are exactly DXMT's.
  * With "expect-device" (run.sh's default, against test/fake_d3d11.c) it also
  * checks the standalone device that comes back: device, context, feature
  * level, the debug flag dropped, and the retry when only 12_x levels are
@@ -56,6 +61,8 @@ static const GUID fake_iids[] =
 static int failures;
 static LONG fake_refs = 1;
 static int fake_cfs_calls;
+static UINT fake_fence_flags[4];
+static int fake_fence_calls;
 
 #define CHECK(cond, ...) do { if (cond) printf("ok    "); else { printf("FAIL  "); failures++; } \
                               printf(__VA_ARGS__); printf("\n"); } while (0)
@@ -83,6 +90,41 @@ static ULONG STDMETHODCALLTYPE fake_addref(struct fake_object *self) { (void)sel
 static ULONG STDMETHODCALLTYPE fake_release(struct fake_object *self) { (void)self; return InterlockedDecrement(&fake_refs); }
 static void STDMETHODCALLTYPE fake_last_slot(struct fake_object *self) { (void)self; }
 
+/* Like madeira-d3d12: fences with flags and bundle lists are refused, silently. */
+static HRESULT STDMETHODCALLTYPE fake_create_fence(struct fake_object *self, UINT64 initial, UINT flags,
+                                                   REFIID riid, void **out)
+{
+    (void)self; (void)initial; (void)riid;
+    if (fake_fence_calls < 4) fake_fence_flags[fake_fence_calls] = flags;
+    fake_fence_calls++;
+    if (flags) return E_NOTIMPL;
+    *out = (void *)&fake_fence_calls;   /* any non-NULL pointer */
+    return S_OK;
+}
+static HRESULT STDMETHODCALLTYPE fake_create_allocator(struct fake_object *self, UINT type, REFIID riid, void **out)
+{
+    (void)self; (void)riid;
+    *out = NULL;
+    return type == 1 ? E_NOTIMPL : E_INVALIDARG;
+}
+static HRESULT STDMETHODCALLTYPE fake_removed_reason(struct fake_object *self) { (void)self; return S_OK; }
+
+typedef HRESULT (STDMETHODCALLTYPE *create_fence_fn)(void *, UINT64, UINT, REFIID, void **);
+typedef HRESULT (STDMETHODCALLTYPE *create_allocator_fn)(void *, UINT, REFIID, void **);
+typedef HRESULT (STDMETHODCALLTYPE *removed_reason_fn)(void *);
+
+static int log_contains(const char *text)
+{
+    char line[1024];
+    int found = 0;
+    FILE *f = fopen("C:\\sr2-d3d12-bridge.log", "r");
+
+    if (!f) return 0;
+    while (!found && fgets(line, sizeof(line), f)) found = strstr(line, text) != NULL;
+    fclose(f);
+    return found;
+}
+
 /* Like madeira-d3d12: known features answered, unknown ones E_INVALIDARG. */
 static HRESULT STDMETHODCALLTYPE fake_cfs(struct fake_object *self, D3D12_FEATURE feature, void *data, UINT size)
 {
@@ -109,7 +151,10 @@ static void make_fake_table(void)
     fake_table[0] = (void *)fake_qi;
     fake_table[1] = (void *)fake_addref;
     fake_table[2] = (void *)fake_release;
+    fake_table[9] = (void *)fake_create_allocator;
     fake_table[13] = (void *)fake_cfs;
+    fake_table[36] = (void *)fake_create_fence;
+    fake_table[37] = (void *)fake_removed_reason;
     fake_table[FAKE_SLOTS - 1] = (void *)fake_last_slot;
     memcpy(fake_snapshot, fake_table, sizeof(fake_snapshot));
     VirtualProtect(fake_table, 4096, PAGE_READONLY, &old);
@@ -167,6 +212,11 @@ int main(int argc, char **argv)
     on12 = (on12_fn)(void *)GetProcAddress(bridge, "D3D11On12CreateDevice");
     CHECK(on12 != NULL, "the bridge exports D3D11On12CreateDevice");
     if (!on12) return 1;
+    CHECK(GetProcAddress(bridge, "D3D11CreateDevice") && GetProcAddress(bridge, "D3D11CreateDeviceAndSwapChain") &&
+          GetProcAddress(bridge, "D3D11CoreCreateDevice") &&
+          !GetProcAddress(bridge, "CreateDirect3D11DeviceFromDXGIDevice") &&
+          !GetProcAddress(bridge, "CreateDirect3D11SurfaceFromDXGISurface"),
+          "the exports are DXMT's four, no more");
 
     hr = on12((IUnknown *)device, D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_DEBUG, levels, 3,
               NULL, 0, 0, &d11, &context, &chosen);
@@ -201,7 +251,9 @@ int main(int argc, char **argv)
     CHECK(copy != fake_table, "the device now points at the bridge's copy of its table");
     CHECK(copy[0] == (void *)fake_qi && copy[2] == (void *)fake_release && copy[FAKE_SLOTS - 1] == (void *)fake_last_slot,
           "the copy keeps QueryInterface, Release and the last of the %d slots", FAKE_SLOTS);
-    CHECK(copy[13] != (void *)fake_cfs, "the copy's CheckFeatureSupport is the guard");
+    CHECK(copy[13] != (void *)fake_cfs && copy[36] != (void *)fake_create_fence &&
+          copy[9] != (void *)fake_create_allocator,
+          "the copy's CheckFeatureSupport, CreateFence and CreateCommandAllocator are the bridge's");
 
     memset(buf, 0xab, sizeof(buf));
     hr = ID3D12Device_CheckFeatureSupport(device, (D3D12_FEATURE)54, buf, 4);
@@ -225,6 +277,28 @@ int main(int argc, char **argv)
 
     hr = ID3D12Device_CheckFeatureSupport(device, (D3D12_FEATURE)54, NULL, 4);
     CHECK(hr == E_INVALIDARG, "a NULL buffer is still refused (hr %#lx)", (unsigned long)hr);
+
+    {
+        static const GUID iid_fence = { 0x0a753dcf, 0xc4d8, 0x4b91, { 0xad, 0xf6, 0xbe, 0x5a, 0x60, 0xd9, 0x5a, 0x76 } };
+        void *object = NULL;
+
+        fake_fence_calls = 0;
+        hr = ((create_fence_fn)fake_device.vtbl[36])(device, 0, 1 /* D3D12_FENCE_FLAG_SHARED */, &iid_fence, &object);
+        CHECK(hr == S_OK && object && fake_fence_calls == 2 && fake_fence_flags[0] == 1 && fake_fence_flags[1] == 0,
+              "a shared fence the layer refuses is made without the flag (hr %#lx, %d calls, flags %u then %u)",
+              (unsigned long)hr, fake_fence_calls, fake_fence_flags[0], fake_fence_flags[1]);
+        fake_fence_calls = 0;
+        hr = ((create_fence_fn)fake_device.vtbl[36])(device, 0, 0, &iid_fence, &object);
+        CHECK(hr == S_OK && fake_fence_calls == 1, "an ordinary fence is one call (hr %#lx, %d calls)",
+              (unsigned long)hr, fake_fence_calls);
+        hr = ((create_allocator_fn)fake_device.vtbl[9])(device, 1 /* BUNDLE */, &iid_fence, &object);
+        CHECK(hr == E_NOTIMPL && log_contains("FAILED CreateCommandAllocator(type 1) -> 0x80004001"),
+              "a refused bundle allocator passes through and is logged by name (hr %#lx)", (unsigned long)hr);
+        hr = ((removed_reason_fn)fake_device.vtbl[37])(device);
+        CHECK(hr == S_OK, "GetDeviceRemovedReason passes through (hr %#lx)", (unsigned long)hr);
+        CHECK(log_contains("CreateFence(flags 0x1) was refused (E_NOTIMPL): made an ordinary fence instead -> 0"),
+              "the fence substitution is logged");
+    }
 
     on12((IUnknown *)device, 0, NULL, 0, NULL, 0, 0, &d11, &context, NULL);
     if (d11) ID3D11Device_Release(d11);

@@ -19,7 +19,9 @@ spread rendering work across more processor cores.
 
 ## What it does
 
-- Passes `D3D11CreateDevice` and the other ordinary calls straight to the real `d3d11.dll`.
+- Passes `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain` and `D3D11CoreCreateDevice` straight
+  to the real `d3d11.dll`. It exports exactly what DXMT's `d3d11.dll` exports, so a program that
+  checks for an export gets the same answer with or without the bridge.
 - Answers `D3D11On12CreateDevice` with a plain Direct3D 11 device when the real one can't. Unity
   only uses that device briefly while it starts.
 - Guards the Direct3D 12 device's `CheckFeatureSupport`: a capability question Madeira's D3D12
@@ -27,15 +29,27 @@ spread rendering work across more processor cores.
   as fatal for `D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT`. Queries where the error is a real answer
   (formats, shader model, root signature version, feature level list) are passed through
   unchanged.
-- Never writes to Madeira's memory. For the guard it copies the device's function table into the
-  bridge, swaps `CheckFeatureSupport` in the copy, and points the device object at the copy.
+- Makes a fence without its flags when madeira-d3d12 refuses a shared, cross-adapter or
+  non-monitored fence (`E_NOTIMPL`, with no log line). The fence works the same inside the game;
+  it just can't be shared with another API. Version 3's test run stopped one step after Unity's
+  Direct3D 12 setup with `d3d12: Device failed error (80004001)`, and a refused fence is the
+  likeliest silent cause.
+- Logs every failed object-creating call on the Direct3D 12 device by name and arguments: heaps,
+  resources, descriptor heaps, root signatures, command allocators and lists, pipeline states,
+  query heaps, command signatures, shared handles and residency calls. Unity stops with
+  `Unrecoverable GPU device error!` whenever one of these fails, and madeira-d3d12 doesn't log
+  every refusal, so this log names the exact call.
+- Never writes to Madeira's memory. To change those calls it copies the device's function table
+  into the bridge, swaps entries in the copy, and points the device object at the copy.
   Version 2 patched the table in place instead. Madeira runs madeira-d3d12 from a copy in its JIT
   pool, and changing that page's protection (`VirtualProtect`) left the whole table reading as
   zeros. The game then crashed calling `Release` through it (address 0).
 - Finds the real `d3d11.dll` the way Madeira's loader does: `system32` first, then
   `C:\windows\sysx64`. In Madeira, `system32` holds an ARM64 build an x64 game can't load, and the
   usable one is in `sysx64`.
-- Writes what it did to `C:\sr2-d3d12-bridge.log` (at most 300 lines).
+- Writes what it did to `C:\sr2-d3d12-bridge.log` (at most 300 lines per run). It also sends each
+  line to the debugger output, which Madeira copies into its own log, so the Get Help files
+  include it.
 
 The idea, a plain D3D11 device for Unity's D3D11On12 call plus a feature-query guard, was first
 shown working for a Unity 6 game on Apple's D3DMetal. This is a separate implementation for
@@ -55,8 +69,9 @@ kGfxThreadingModeClientWorkerJobs`.
 
 To undo, delete `d3d11.dll` from the game folder. Nothing else is changed.
 
-`env.SR2_BRIDGE_GUARD = 0` in the game's config turns the feature-query guard off and keeps the
-rest, to tell a guard problem from a D3D12 problem.
+`env.SR2_BRIDGE_GUARD = 0` in the game's config leaves the Direct3D 12 device alone (no
+feature-query guard, no fence fix, no logging of its calls) and keeps the rest, to tell a bridge
+problem from a Direct3D 12 problem.
 
 ## Build and test
 
@@ -74,6 +89,10 @@ in a read-only page. `test/fake_d3d11.c` stands in for DXMT. The test checks:
 - the device that comes back, the dropped debug flag, and the retry when only 12_x feature levels
   are requested;
 - which feature queries the guard changes and which it leaves alone;
-- balanced references, and the `SR2_BRIDGE_GUARD=0` switch.
+- that a refused shared fence is made again without the flag, and that other failures pass
+  through unchanged and are logged by name;
+- the export list, balanced references, and the `SR2_BRIDGE_GUARD=0` switch.
+
+`WINEDEBUG=+debugstr sh test/run.sh` also shows the lines the bridge sends to the debugger.
 
 The build is reproducible: `--no-insert-timestamp` leaves no build time in the file.

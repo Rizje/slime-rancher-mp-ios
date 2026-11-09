@@ -18,7 +18,7 @@ trap 'rm -rf "$work"' EXIT
 x86_64-w64-mingw32-gcc -std=c11 -O1 -Wall -Wextra -o "$work/test_bridge.exe" "$here/test_bridge.c"
 cp "$here/../d3d11.dll" "$work/"
 WINE="${WINE:-$(command -v wine64 || command -v wine || echo /usr/lib/wine/wine64)}"
-export WINEPREFIX="$work/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=;d3d11=n,b"
+export WINEPREFIX="$work/prefix" WINEDEBUG="${WINEDEBUG:--all}" WINEDLLOVERRIDES="mscoree,mshtml=;d3d11=n,b"
 "$WINE" wineboot -i >/dev/null 2>&1 || true
 cd "$work"
 if [ "${1:-}" = wine ]; then

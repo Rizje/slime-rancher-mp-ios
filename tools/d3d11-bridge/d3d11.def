@@ -1,8 +1,6 @@
 LIBRARY d3d11.dll
 EXPORTS
+    D3D11CoreCreateDevice = bridge_D3D11CoreCreateDevice
     D3D11CreateDevice = bridge_D3D11CreateDevice
     D3D11CreateDeviceAndSwapChain = bridge_D3D11CreateDeviceAndSwapChain
     D3D11On12CreateDevice = bridge_D3D11On12CreateDevice
-    D3D11CoreCreateDevice = bridge_D3D11CoreCreateDevice
-    CreateDirect3D11DeviceFromDXGIDevice = bridge_CreateDirect3D11DeviceFromDXGIDevice
-    CreateDirect3D11SurfaceFromDXGISurface = bridge_CreateDirect3D11SurfaceFromDXGISurface
