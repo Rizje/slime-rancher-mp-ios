@@ -23,6 +23,16 @@ anything fails.
    3. Back in Madeira, connect **LocalDevVPN**, tap **Check setup**, then **Enable JIT**.
 4. Madeira's **Settings** should show green checks for **JIT** and **Memory+** and say
    **Ready to play**.
+5. **If Memory+ is not green** (likely with SideStore and a free Apple ID): SideStore asks for the
+   Increased Memory Limit but doesn't turn it on for free accounts
+   ([SideStore#1616](https://github.com/SideStore/SideStore/issues/1616)). Without it, an 8 GB
+   iPhone gives the app only about 3.3 GB, far too little for Slime Rancher 2. Fix it once:
+   1. Sideload [GetMoreRam](https://github.com/hugeBlack/GetMoreRam) and sign in with the same
+      Apple ID SideStore uses.
+   2. On its **App IDs** page, tap **Refresh**, tap Madeira's App ID, then
+      **Add Increased Memory Limit**.
+   3. Reinstall Madeira from SideStore (it upgrades in place) and check that Memory+ is green.
+   4. Delete GetMoreRam afterwards to free the app slot. SideStore's weekly refresh keeps the fix.
 
 > **Why SideStore and not the paid certificate:** JIT only works if Madeira is signed as
 > debuggable. That needs a development certificate, which SideStore uses with your Apple ID.
@@ -63,6 +73,13 @@ Then press **Play** and check, in order:
 
 **If it fails before the menu:** stop and collect Madeira's logs. That's a Madeira bug to report,
 and nothing in parts D or later will help.
+
+**Plan B for part C only:** if the game won't render or runs badly in Madeira, try the same test
+in [Playport](https://github.com/playportdev/playport) (official repo only). It's a fork of Madeira
+with newer Wine and FEX and a different graphics path (Vulkan by default, DXMT as an option), so
+it may behave differently. Its release app can't set the DLL override MelonLoader needs, so it's
+only for checking the plain game. A free Apple ID allows 3 sideloaded apps at once, so you may
+need to remove one to install it.
 
 ## D. Add the mods (only if part C passed)
 
