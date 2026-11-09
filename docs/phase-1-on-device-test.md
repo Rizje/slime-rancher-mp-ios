@@ -99,6 +99,22 @@ it may behave differently. Its release app can't set the DLL override MelonLoade
 only for checking the plain game. A free Apple ID allows 3 sideloaded apps at once, so you may
 need to remove one to install it.
 
+### C2. Direct3D 12 (performance)
+
+With `-force-d3d12` in **Launch arguments**, Slime Rancher 2 still falls back to Direct3D 11 in
+Madeira, because Madeira's `d3d11.dll` can't make the "D3D11On12" device Unity asks for. The
+[d3d11 bridge](../tools/d3d11-bridge/README.md) fills that gap, so Unity's multi-core Direct3D 12
+renderer can run.
+
+1. Copy `tools/d3d11-bridge/d3d11.dll` next to `SlimeRancher2.exe` in the game folder.
+2. Keep `-force-d3d12` in **Launch arguments**.
+3. Launch once and let the shaders convert (slow load, stutter), quit, then launch again.
+4. After 3 minutes on the ranch, compare the FPS with the same spot without the bridge.
+5. Bring back the Get Help files, `drive_c › sr2-d3d12-bridge.log` and the game's own log at
+   `drive_c › users › mobile › AppData › LocalLow › MonomiPark › SlimeRancher2 › Player.log`.
+
+To undo, delete the `d3d11.dll` from the game folder.
+
 ## D. Add the mods (only if part C passed)
 
 Ranching Together needs three things, all versions matching exactly:
@@ -151,6 +167,7 @@ Guest, school and hotel Wi-Fi often block devices from talking to each other. Us
 | World renders correctly | |
 | FPS on the ranch | |
 | FPS in a busy area | |
+| (Part C2) FPS on the ranch with the d3d11 bridge, second launch | |
 | Peak memory on the overlay | |
 | 20 minutes without a crash or kill | |
 | Touch controls usable | |
