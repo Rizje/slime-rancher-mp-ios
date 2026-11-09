@@ -23,6 +23,15 @@
  *     (formats, shader model, root signature version, feature level list) are
  *     left alone, because a zeroed answer to those would be wrong.
  *
+ *     The guard never writes to the D3D12 layer's memory. It copies the
+ *     device's function table into this DLL, replaces CheckFeatureSupport in
+ *     the copy and points the device object at the copy. Patching the table
+ *     in place does not work in Madeira: madeira-d3d12 runs from a copy of
+ *     its DLL in Madeira's JIT pool, and changing the protection of a page
+ *     there (VirtualProtect) left the whole table reading as zeros, so the
+ *     next call through it jumped to address 0 (version 2 of this bridge).
+ *     Setting SR2_BRIDGE_GUARD=0 in the environment turns the guard off.
+ *
  * Where the real d3d11.dll is
  *   The system directory first, as Windows and Wine search. Madeira runs x64
  *   games next to ARM64 system DLLs: there, system32 holds the ARM64 build,
@@ -44,18 +53,43 @@
 #include <d3d11.h>
 #include <d3d12.h>
 
-#define BRIDGE_VERSION "2"
+#define BRIDGE_VERSION "3"
 #define BRIDGE_LOG_PATH "C:\\sr2-d3d12-bridge.log"
 #define BRIDGE_LOG_MAX_LINES 300
 #define BRIDGE_MAX_TABLES 8
 #define BRIDGE_MAX_GUARDED_SIZE 4096
 
-/* ID3D12Device's IID, written out so no import library is needed. */
-static const GUID bridge_iid_d3d12_device =
-    { 0x189819f1, 0x1db6, 0x4b57, { 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7 } };
-
-/* CheckFeatureSupport's slot in every ID3D12Device* vtable (they all extend ID3D12Device). */
+/* CheckFeatureSupport's slot in every ID3D12Device* table (they all extend ID3D12Device). */
 #define BRIDGE_CFS_SLOT (offsetof(ID3D12DeviceVtbl, CheckFeatureSupport) / sizeof(void *))
+/* Slots copied at least: madeira-d3d12's device table is an ID3D12Device10
+ * table (79 slots) while it answers QueryInterface only up to ID3D12Device8. */
+#define BRIDGE_TABLE_MIN 79
+#define BRIDGE_TABLE_MAX 104   /* ID3D12Device16 */
+
+/* ID3D12Device and its later versions with the size of each one's function
+ * table, from Microsoft's DirectX-Headers (d3d12.h), written out so no import
+ * library is needed. */
+static const struct { GUID iid; UINT slots; } bridge_device_versions[] =
+{
+    { { 0x189819f1, 0x1db6, 0x4b57, { 0xbe, 0x54, 0x18, 0x21, 0x33, 0x9b, 0x85, 0xf7 } }, 44 },
+    { { 0x77acce80, 0x638e, 0x4e65, { 0x88, 0x95, 0xc1, 0xf2, 0x33, 0x86, 0x86, 0x3e } }, 47 },
+    { { 0x30baa41e, 0xb15b, 0x475c, { 0xa0, 0xbb, 0x1a, 0xf5, 0xc5, 0xb6, 0x43, 0x28 } }, 48 },
+    { { 0x81dadc15, 0x2bad, 0x4392, { 0x93, 0xc5, 0x10, 0x13, 0x45, 0xc4, 0xaa, 0x98 } }, 51 },
+    { { 0xe865df17, 0xa9ee, 0x46f9, { 0xa4, 0x63, 0x30, 0x98, 0x31, 0x5a, 0xa2, 0xe5 } }, 57 },
+    { { 0x8b4f173b, 0x2fea, 0x4b80, { 0x8f, 0x58, 0x43, 0x07, 0x19, 0x1a, 0xb9, 0x5d } }, 65 },
+    { { 0xc70b221b, 0x40e4, 0x4a17, { 0x89, 0xaf, 0x02, 0x5a, 0x07, 0x27, 0xa6, 0xdc } }, 66 },
+    { { 0x5c014b53, 0x68a1, 0x4b9b, { 0x8b, 0xd1, 0xdd, 0x60, 0x46, 0xb9, 0x35, 0x8b } }, 68 },
+    { { 0x9218e6bb, 0xf944, 0x4f7e, { 0xa7, 0x5c, 0xb1, 0xb2, 0xc7, 0xb7, 0x01, 0xf3 } }, 73 },
+    { { 0x4c80e962, 0xf032, 0x4f60, { 0xbc, 0x9e, 0xeb, 0xc2, 0xcf, 0xa1, 0xd8, 0x3c } }, 76 },
+    { { 0x517f8718, 0xaa66, 0x49f9, { 0xb0, 0x2b, 0xa7, 0xab, 0x89, 0xc0, 0x60, 0x31 } }, 79 },
+    { { 0x5405c344, 0xd457, 0x444e, { 0xb4, 0xdd, 0x23, 0x66, 0xe4, 0x5a, 0xee, 0x39 } }, 80 },
+    { { 0x5af5c532, 0x4c91, 0x4cd0, { 0xb5, 0x41, 0x15, 0xa4, 0x05, 0x39, 0x5f, 0xc5 } }, 81 },
+    { { 0x14eecffc, 0x4df8, 0x40f7, { 0xa1, 0x18, 0x5c, 0x81, 0x6f, 0x45, 0x69, 0x5e } }, 82 },
+    { { 0x5f6e592d, 0xd895, 0x44c2, { 0x8e, 0x4a, 0x88, 0xad, 0x49, 0x26, 0xd3, 0x23 } }, 83 },
+    { { 0x76cff76f, 0x1e9b, 0x4450, { 0x8c, 0xdc, 0x34, 0xf1, 0xaf, 0x78, 0x8e, 0x5b } }, 94 },
+    { { 0xb34a50dd, 0xe102, 0x428f, { 0x82, 0xa0, 0x82, 0x29, 0x4a, 0x27, 0xbb, 0xe6 } }, 104 },
+};
+#define bridge_iid_d3d12_device (bridge_device_versions[0].iid)
 
 typedef HRESULT (WINAPI *bridge_on12_fn)(IUnknown *, UINT, const D3D_FEATURE_LEVEL *, UINT,
                                          IUnknown *const *, UINT, UINT, ID3D11Device **,
@@ -73,8 +107,17 @@ static INIT_ONCE bridge_once = INIT_ONCE_STATIC_INIT;
 static SRWLOCK bridge_log_lock = SRWLOCK_INIT;
 static LONG bridge_log_lines;
 
+/* A D3D12 device table this bridge copied: the implementation's own table is
+ * only read, never written. */
+struct bridge_table
+{
+    void **original;
+    bridge_cfs_fn real;                  /* the original CheckFeatureSupport */
+    UINT count;                          /* slots copied */
+    void *slots[BRIDGE_TABLE_MAX];       /* the copy the device object points at */
+};
 static SRWLOCK bridge_table_lock = SRWLOCK_INIT;
-static struct { void **table; bridge_cfs_fn real; } bridge_tables[BRIDGE_MAX_TABLES];
+static struct bridge_table bridge_tables[BRIDGE_MAX_TABLES];
 static volatile LONG bridge_ntables;
 
 static volatile LONG bridge_noted_features[64];
@@ -240,22 +283,22 @@ static void bridge_note_feature(UINT feature, UINT size)
                "answered \"not supported\"", feature, size);
 }
 
-static bridge_cfs_fn bridge_real_cfs_for(void **table)
+static struct bridge_table *bridge_table_of(void **slots)
 {
     LONG i, n = bridge_ntables;
 
-    for (i = 0; i < n; i++) if (bridge_tables[i].table == table) return bridge_tables[i].real;
+    for (i = 0; i < n; i++) if (bridge_tables[i].slots == slots) return &bridge_tables[i];
     return NULL;
 }
 
 static HRESULT STDMETHODCALLTYPE bridge_check_feature_support(ID3D12Device *device, D3D12_FEATURE feature,
                                                               void *data, UINT size)
 {
-    bridge_cfs_fn real = bridge_real_cfs_for(*(void ***)device);
+    struct bridge_table *table = bridge_table_of(*(void ***)device);
     HRESULT hr;
 
-    if (!real) return E_INVALIDARG;   /* only installed in tables listed above */
-    hr = real(device, feature, data, size);
+    if (!table) return E_INVALIDARG;   /* only reachable through a copied table */
+    hr = table->real(device, feature, data, size);
     if (hr == E_INVALIDARG && data && size && size <= BRIDGE_MAX_GUARDED_SIZE &&
         !bridge_feature_keeps_errors((UINT)feature))
     {
@@ -266,51 +309,85 @@ static HRESULT STDMETHODCALLTYPE bridge_check_feature_support(ID3D12Device *devi
     return hr;
 }
 
-static void bridge_guard_table(void **table)
+/* How many slots the object's table has at least: the newest ID3D12Device
+ * version it answers for with the same pointer, and never fewer than
+ * madeira-d3d12's own table. */
+static UINT bridge_table_size(IUnknown *object, int *newest)
 {
-    DWORD old_protect;
-    bridge_cfs_fn real;
+    UINT i, slots = BRIDGE_TABLE_MIN;
+
+    *newest = -1;
+    for (i = 0; i < sizeof(bridge_device_versions) / sizeof(bridge_device_versions[0]); i++)
+    {
+        void *other = NULL;
+
+        if (FAILED(IUnknown_QueryInterface(object, &bridge_device_versions[i].iid, &other)) || !other) continue;
+        if (other == (void *)object)
+        {
+            *newest = (int)i;
+            if (bridge_device_versions[i].slots > slots) slots = bridge_device_versions[i].slots;
+        }
+        IUnknown_Release((IUnknown *)other);
+    }
+    return slots;
+}
+
+/* Points the object at a copy of its function table in which
+ * CheckFeatureSupport is the guard. Only the object's own first field (its
+ * table pointer, in ordinary heap memory) is written. */
+static void bridge_guard_object(IUnknown *object)
+{
+    void **original = *(void ***)object;
+    struct bridge_table *table;
+    char name[8] = "";
+    int newest;
+    UINT count;
     LONG i, n;
+
+    if (bridge_table_of(original)) return;   /* already guarded */
+    count = bridge_table_size(object, &newest);
 
     AcquireSRWLockExclusive(&bridge_table_lock);
     n = bridge_ntables;
-    for (i = 0; i < n; i++) if (bridge_tables[i].table == table) break;
-    if (i < n || table[BRIDGE_CFS_SLOT] == (void *)bridge_check_feature_support)
+    for (i = 0; i < n; i++) if (bridge_tables[i].original == original && bridge_tables[i].count >= count) break;
+    if (i < n) table = &bridge_tables[i];
+    else if (n >= BRIDGE_MAX_TABLES) table = NULL;
+    else
     {
-        ReleaseSRWLockExclusive(&bridge_table_lock);
-        return;
+        table = &bridge_tables[n];
+        table->original = original;
+        table->real = (bridge_cfs_fn)original[BRIDGE_CFS_SLOT];
+        table->count = count;
+        memcpy(table->slots, original, count * sizeof(void *));
+        table->slots[BRIDGE_CFS_SLOT] = (void *)bridge_check_feature_support;
+        MemoryBarrier();
+        bridge_ntables = n + 1;   /* published before the object can reach the copy */
+        MemoryBarrier();
     }
-    if (n >= BRIDGE_MAX_TABLES)
-    {
-        ReleaseSRWLockExclusive(&bridge_table_lock);
-        bridge_log("too many D3D12 device tables; table %p left unguarded", (void *)table);
-        return;
-    }
-    if (!VirtualProtect(&table[BRIDGE_CFS_SLOT], sizeof(void *), PAGE_READWRITE, &old_protect))
-    {
-        DWORD error = GetLastError();
-        ReleaseSRWLockExclusive(&bridge_table_lock);
-        bridge_log("VirtualProtect on table %p failed (error %lu); guard not installed",
-                   (void *)table, error);
-        return;
-    }
-    real = (bridge_cfs_fn)table[BRIDGE_CFS_SLOT];
-    bridge_tables[n].table = table;
-    bridge_tables[n].real = real;
-    MemoryBarrier();
-    bridge_ntables = n + 1;   /* published before the hook can be reached */
-    MemoryBarrier();
-    table[BRIDGE_CFS_SLOT] = (void *)bridge_check_feature_support;
-    VirtualProtect(&table[BRIDGE_CFS_SLOT], sizeof(void *), old_protect, &old_protect);
+    if (table) InterlockedExchangePointer((void *volatile *)object, table->slots);
     ReleaseSRWLockExclusive(&bridge_table_lock);
-    bridge_log("feature-query guard installed on D3D12 device table %p (real CheckFeatureSupport %p)",
-               (void *)table, (void *)real);
+
+    if (!table)
+    {
+        bridge_log("too many D3D12 device tables; device %p left unguarded", (void *)object);
+        return;
+    }
+    if (newest > 0) snprintf(name, sizeof(name), "%d", newest);
+    bridge_log("feature-query guard on D3D12 device %p: its table %p copied to %p (%u slots; "
+               "it answers up to ID3D12Device%s)", (void *)object, (void *)original,
+               (void *)table->slots, count, name);
 }
 
 static void bridge_guard_device(IUnknown *unknown)
 {
     ID3D12Device *device = NULL;
+    char value[8];
 
+    if (GetEnvironmentVariableA("SR2_BRIDGE_GUARD", value, sizeof(value)) && value[0] == '0')
+    {
+        bridge_log("feature-query guard off (SR2_BRIDGE_GUARD=0)");
+        return;
+    }
     if (!unknown)
     {
         bridge_log("D3D11On12CreateDevice got no D3D12 device");
@@ -321,10 +398,10 @@ static void bridge_guard_device(IUnknown *unknown)
         bridge_log("the object passed to D3D11On12CreateDevice is not an ID3D12Device");
         return;
     }
-    /* Unity calls through the interface it passed, which may be a later
-     * ID3D12DeviceN with its own table; guard that one and ID3D12Device's. */
-    bridge_guard_table(*(void ***)unknown);
-    if ((void *)device != (void *)unknown) bridge_guard_table(*(void ***)device);
+    /* Unity calls through the interface it passed; guard that object and,
+     * if QueryInterface returned a different one, that one too. */
+    bridge_guard_object(unknown);
+    if ((void *)device != (void *)unknown) bridge_guard_object((IUnknown *)device);
     ID3D12Device_Release(device);
 }
 

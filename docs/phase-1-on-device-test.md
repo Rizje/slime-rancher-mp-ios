@@ -108,7 +108,8 @@ renderer can run.
 
 1. Copy `tools/d3d11-bridge/d3d11.dll` next to `SlimeRancher2.exe` in the game folder.
 2. Keep `-force-d3d12` in **Launch arguments**.
-3. Launch once and let the shaders convert (slow load, stutter), quit, then launch again.
+3. Launch once and wait: the first start can sit on a black screen for a few minutes while the
+   shaders convert. Load into the ranch, quit, then launch again.
 4. After 3 minutes on the ranch, compare the FPS with the same spot without the bridge.
 5. Bring back the Get Help files, `drive_c › sr2-d3d12-bridge.log` and the game's own log at
    `drive_c › users › mobile › AppData › LocalLow › MonomiPark › SlimeRancher2 › Player.log`.

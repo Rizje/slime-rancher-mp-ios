@@ -27,6 +27,11 @@ spread rendering work across more processor cores.
   as fatal for `D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT`. Queries where the error is a real answer
   (formats, shader model, root signature version, feature level list) are passed through
   unchanged.
+- Never writes to Madeira's memory. For the guard it copies the device's function table into the
+  bridge, swaps `CheckFeatureSupport` in the copy, and points the device object at the copy.
+  Version 2 patched the table in place instead. Madeira runs madeira-d3d12 from a copy in its JIT
+  pool, and changing that page's protection (`VirtualProtect`) left the whole table reading as
+  zeros. The game then crashed calling `Release` through it (address 0).
 - Finds the real `d3d11.dll` the way Madeira's loader does: `system32` first, then
   `C:\windows\sysx64`. In Madeira, `system32` holds an ARM64 build an x64 game can't load, and the
   usable one is in `sysx64`.
@@ -50,6 +55,9 @@ kGfxThreadingModeClientWorkerJobs`.
 
 To undo, delete `d3d11.dll` from the game folder. Nothing else is changed.
 
+`env.SR2_BRIDGE_GUARD = 0` in the game's config turns the feature-query guard off and keeps the
+rest, to tell a guard problem from a D3D12 problem.
+
 ## Build and test
 
 ```sh
@@ -58,9 +66,14 @@ sh test/run.sh       # Wine 64-bit: apt-get install wine64
 sh test/run.sh wine  # same checks against Wine's own d3d11.dll
 ```
 
-`test/run.sh` loads the bridge in Wine with Madeira's folder layout. A fake D3D12 device stands in
-for madeira-d3d12, and `test/fake_d3d11.c` stands in for DXMT. It checks the device that comes
-back, the dropped debug flag, the retry when only 12_x feature levels are requested, and which
-feature queries the guard changes and which it leaves alone.
+`test/run.sh` loads the bridge in Wine with Madeira's folder layout. A fake D3D12 device built like
+madeira-d3d12's stands in for it: one object answering up to `ID3D12Device8`, with a 79-slot table
+in a read-only page. `test/fake_d3d11.c` stands in for DXMT. The test checks:
+
+- that the D3D12 layer's table is never written, which version 2 fails;
+- the device that comes back, the dropped debug flag, and the retry when only 12_x feature levels
+  are requested;
+- which feature queries the guard changes and which it leaves alone;
+- balanced references, and the `SR2_BRIDGE_GUARD=0` switch.
 
 The build is reproducible: `--no-insert-timestamp` leaves no build time in the file.
