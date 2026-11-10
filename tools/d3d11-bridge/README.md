@@ -3,6 +3,32 @@
 A replacement `d3d11.dll` that goes in Slime Rancher 2's game folder. It lets the game's
 Direct3D 12 renderer start in Madeira instead of falling back to Direct3D 11.
 
+## Result on Madeira 0.2.0 (11-03): works, but slower than Direct3D 11
+
+With version 4, Slime Rancher 2 runs on Direct3D 12 in Madeira: Unity's D3D12 renderer starts,
+Madeira's D3D12 layer creates the swap chain, and frames are presented. Unity's calls to
+`ID3D12Device::Evict` get `E_NOTIMPL` (not implemented in madeira-d3d12), and Unity carries on.
+
+It is about half as fast as Direct3D 11 on the same phone (iPhone 16 Pro Max), measured over the
+first 90 seconds after the first frame:
+
+| Renderer | FPS |
+|---|---|
+| Direct3D 11 (DXMT), two runs | 28–30 for 70–100 s (the 30 FPS cap), then 16–21 |
+| Direct3D 12 (madeira-d3d12 + this bridge) | 9–15 |
+
+madeira-d3d12's own per-frame report shows where the time goes: `ExecuteCommandLists` takes
+65–165 ms per frame on the submitting thread, of which Metal encoding is about 4.5 ms. The rest is
+madeira-d3d12 replaying the recorded command lists (about 100 encoders, 100 fence waits and
+14,500 `useResource` entries per frame). The GPU is busy only 9–15% of the time. The replay runs
+on the thread that calls `ExecuteCommandLists` (`async-submit = 0`), so Unity's multi-threaded
+recording is serialized again. Even moved to another thread, a replay this long would cap the
+frame rate near 15 FPS.
+
+Nothing in the game folder can change that cost, so the bridge isn't useful for Slime Rancher 2
+until madeira-d3d12's replay gets faster. Play on Direct3D 11: delete `d3d11.dll` from the game
+folder and remove `-force-d3d12` from the launch arguments.
+
 ## Why
 
 With `-force-d3d12`, Unity creates its Direct3D 12 device on Madeira's D3D12 layer, then asks

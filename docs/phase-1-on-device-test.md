@@ -99,7 +99,13 @@ it may behave differently. Its release app can't set the DLL override MelonLoade
 only for checking the plain game. A free Apple ID allows 3 sideloaded apps at once, so you may
 need to remove one to install it.
 
-### C2. Direct3D 12 (performance)
+### C2. Direct3D 12 (performance) — tested, not worth it on Madeira 0.2.0
+
+Result: with bridge version 4 the game runs on Direct3D 12, but at 9–15 FPS against 28–30 on
+Direct3D 11 over the same first 90 seconds. Madeira's D3D12 layer spends 65–165 ms per frame
+replaying Unity's commands. Skip this part; details in the
+[bridge README](../tools/d3d11-bridge/README.md). The steps are kept for a later Madeira version.
+
 
 With `-force-d3d12` in **Launch arguments**, Slime Rancher 2 still falls back to Direct3D 11 in
 Madeira, because Madeira's `d3d11.dll` can't make the "D3D11On12" device Unity asks for. The
@@ -168,7 +174,7 @@ Guest, school and hotel Wi-Fi often block devices from talking to each other. Us
 | World renders correctly | |
 | FPS on the ranch | |
 | FPS in a busy area | |
-| (Part C2) FPS on the ranch with the d3d11 bridge, second launch | |
+| (Part C2) FPS with the d3d11 bridge | 9–15 (Direct3D 11: 28–30); skip on Madeira 0.2.0 |
 | Peak memory on the overlay | |
 | 20 minutes without a crash or kill | |
 | Touch controls usable | |
