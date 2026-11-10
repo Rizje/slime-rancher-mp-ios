@@ -25,6 +25,39 @@ power budgets and the process loses the performance cores
 
 The GPU is not the limit: 16–26% busy on Direct3D 11.
 
+## Where the processor time goes
+
+Madeira's per-thread census (`[xp-t]`) with the thread names it logs (`[thr-name]`), for the
+10:24 run. Shares are of one core; "clamped" is the world after iOS cut the CPU (100–210 s).
+
+| Thread | Menu, full clock | World, clamped |
+|---|---|---|
+| `wine-x18-exc` (Madeira: repairs register x18, which iOS clears) | 17% | 47% |
+| Game main thread | 15% | 30% |
+| `Job.Worker` 0–4 (Unity job system) | 5% | 29% |
+| `UnityGfxDeviceWorker` (render thread) | 5% | 13% |
+| Three unnamed Madeira threads | 14% | 30% |
+| `dxmt-encode-thr` (Direct3D 11 to Metal) | 3% | 7% |
+
+In the clamped world only about half of the processor time is the game's own threads; the
+largest single consumer is Madeira's x18 repair thread. Unity starts 5 job workers and 16
+background workers, sized for a desktop PC.
+
+## A custom Slime Rancher 2 launcher
+
+A Madeira or PlayPort build tuned for this game could remove part of the overhead above
+(PlayPort carries x18 patches Madeira 0.2.0 lacks) and ship the settings built in. It would not
+lift the ceiling: PlayPort's own analysis puts heavy PC games at 16–18 FPS once the clamp
+leaves the efficiency cores
+([stack analysis](https://github.com/playportdev/playport/blob/main/docs/evidence/2026-10-31-stack-performance-analysis.md)).
+Building one needs Apple's SDK from an `Xcode.xip`, which PlayPort's Linux build takes as an
+input and this environment cannot download, and every change needs a test on the phone.
+
+The cheaper test of the same idea: cap Unity's job workers with the launch argument
+`-job-worker-count 2` (Unity reads it in the standalone player, or `job-worker-count=2` in
+`boot.config`). It cuts the workers' own time and the thread wake-ups that go through Madeira's
+sync and x18 paths, with nothing else changed.
+
 ## What was ruled out, and why
 
 | Lever | Result |
