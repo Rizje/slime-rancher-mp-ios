@@ -7,7 +7,7 @@ downloads and published on [Releases](https://github.com/Rizje/slime-rancher-mp-
 
 | In the zip | From |
 |---|---|
-| `version.dll`, `MelonLoader/` | [MelonLoader v0.7.3](https://github.com/LavaGang/MelonLoader/releases/tag/v0.7.3), `MelonLoader.x64.zip` (Apache-2.0) |
+| `winhttp.dll`, `MelonLoader/` | [MelonLoader v0.7.3](https://github.com/LavaGang/MelonLoader/releases/tag/v0.7.3), `MelonLoader.x64.zip` (Apache-2.0); `winhttp.dll` is its `version.dll`, renamed (below) |
 | `dotnet/` | Microsoft's .NET 6.0.36 Runtime and Desktop Runtime for Windows x64, SHA-512 checked against Microsoft's release metadata (MIT) |
 
 0.7.3 is the version Ranching Together needs, so the multiplayer mod can go on top later. For
@@ -18,7 +18,7 @@ IL2CPP games like this one MelonLoader runs on .NET 6. On Windows it installs th
 
 1. In Safari, download `SR2-MelonLoader-0.7.3-pack.zip` from the newest
    **MelonLoader 0.7.3 pack** on the Releases page. In Files, tap it to unzip.
-2. Open the new folder **Slime Rancher 2 MelonLoader**. Select `version.dll`, `MelonLoader` and
+2. Open the new folder **Slime Rancher 2 MelonLoader**. Select `winhttp.dll`, `MelonLoader` and
    `dotnet`, tap **Move**, and move them into
    **SR2 Launcher › wine › drive_c › Program Files (x86) › Steam › steamapps › common ›
    Slime Rancher 2**, next to `SlimeRancher2.exe`.
@@ -26,7 +26,7 @@ IL2CPP games like this one MelonLoader runs on .NET 6. On Windows it installs th
    line at the end, tap **Done**:
 
    ```
-   env.WINEDLLOVERRIDES = version=n,b
+   env.WINEDLLOVERRIDES = winhttp=n,b
    ```
 
 4. Play. The first start with MelonLoader is much slower than usual: MelonLoader reads the game's
@@ -36,7 +36,24 @@ IL2CPP games like this one MelonLoader runs on .NET 6. On Windows it installs th
 It worked when the game folder has `MelonLoader/Latest.log` and a `Mods` folder after that first
 start.
 
-To undo, delete `version.dll` from the game folder. Without it the other files do nothing.
+To undo, delete `winhttp.dll` from the game folder. Without it the other files do nothing.
+
+## Why `winhttp.dll` and not `version.dll`
+
+MelonLoader loads through a proxy DLL in the game folder that Windows loads in place of a system
+one. Its usual name, `version.dll`, does not work in SR2 Launcher or Madeira 0.2.0. Madeira's own
+system DLLs import `version.dll` directly (`shell32`, `setupapi` and others, which upstream Wine
+loads later), and nearly every core DLL reaches one of them: `advapi32`, `user32`, `ole32` and
+`gdi32` all do. So Wine has to start a `version.dll` proxy in the middle of starting those, before
+`msvcrt` (the C runtime) is ready. MelonLoader's start-up calls `advapi32!LookupPrivilegeValueW`,
+which uses `msvcrt`'s `_wcsicmp`, and the game closed with an access violation in
+`msvcrt_get_thread_data` (log: `"version.dll" failed to initialize, aborting`). No Madeira system
+DLL imports `winhttp.dll`, and Unity's player does, so under that name MelonLoader starts after
+the DLLs it needs. MelonLoader 0.7.3 picks its exports by its file name; `winhttp` is one of its
+proxy names (`ProxyMap.cs`).
+
+Already copied the files as `version.dll`? Rename it to `winhttp.dll` (long-press, Rename) and
+change the config line to `winhttp=n,b`.
 
 ## If it fails
 

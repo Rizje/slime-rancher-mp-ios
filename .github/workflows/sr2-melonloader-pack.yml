@@ -64,14 +64,19 @@ jobs:
           pack="pack/Slime Rancher 2 MelonLoader"
           mkdir -p "$pack/dotnet"
           unzip -q dl/MelonLoader.x64.zip -d "$pack"
+          # Loaded as winhttp.dll, not version.dll: in Madeira, Wine's own system DLLs import version.dll
+          # (shell32 and others, statically), so a version.dll proxy starts in the middle of their start-up,
+          # before msvcrt is up, and its LookupPrivilegeValueW crashed in msvcrt. Only the game imports
+          # winhttp. MelonLoader picks its proxy exports by its own file name (ProxyMap: winhttp).
+          mv "$pack/version.dll" "$pack/winhttp.dll"
           unzip -q dl/runtime.zip -d "$pack/dotnet"
           unzip -q -o dl/windowsdesktop.zip -d "$pack/dotnet"
           cp dl/MelonLoader-LICENSE.md "$pack/"
           sed -e "s/@MELONLOADER@/$MELONLOADER/" -e "s/@DOTNET@/$DOTNET/" launcher/melonloader/PACK-README.txt \
             > "$pack/READ ME FIRST.txt"
           # What MelonLoader and the .NET host need, where they look for it.
-          # MelonLoader 0.7.3's zip: version.dll (the proxy, with its bootstrap) and MelonLoader/.
-          for f in version.dll MelonLoader/net6/MelonLoader.dll MelonLoader/net6/MelonLoader.runtimeconfig.json \
+          # MelonLoader 0.7.3's zip: version.dll (the proxy, with its bootstrap, renamed above) and MelonLoader/.
+          for f in winhttp.dll MelonLoader/net6/MelonLoader.dll MelonLoader/net6/MelonLoader.runtimeconfig.json \
                    "dotnet/host/fxr/$DOTNET/hostfxr.dll" \
                    "dotnet/shared/Microsoft.NETCore.App/$DOTNET/coreclr.dll" \
                    "dotnet/shared/Microsoft.WindowsDesktop.App/$DOTNET" \
