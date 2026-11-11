@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH 1/4] ntdll: no region query for shared-data reads
+
+Madeira's Mach exception thread serves every guest fault of every thread, one
+at a time. In Slime Rancher 2 it spent most of its time in
+ios_subfloor_backing_probe -> mach_vm_region_recurse for reads of
+KUSER_SHARED_DATA (guest 0x7ffe0320/0x7ffe0328, 100-130 a second). For an
+object mapped more than once the kernel walks the whole map to answer that
+query, so the thread's cost grew with the map: 47 % of a core on average and
+over 90 % late in a run on an iPhone 16 Pro Max, while the game's main thread
+used under a third of one.
+
+The window onto that page is registered once onto user_shared_data, which
+stays mapped and readable for the whole session, and ios_exc_usd is that
+pointer. A read wholly inside the page that translates to exactly that mapping
+cannot reach unmapped backing, which is all the probe guards against, so it
+skips the probe. Writes, other windows and anything not matching exactly
+still take it.
+
+env.MADEIRA_USD_PROBE = 1 probes these reads again. The [subfloor] ml956 line
+reports usd-probe-skips.
+---
+ build/ntdll-unix/signal_arm64_ios.c | 51 +++++++++++++++++++++++++++--
+ 1 file changed, 48 insertions(+), 3 deletions(-)
+
+diff --git a/build/ntdll-unix/signal_arm64_ios.c b/build/ntdll-unix/signal_arm64_ios.c
+index ed0e3be..08249c2 100644
+--- a/build/ntdll-unix/signal_arm64_ios.c
++++ b/build/ntdll-unix/signal_arm64_ios.c
+@@ -2440,6 +2440,7 @@ static uintptr_t ios_subfloor_translate( uint64_t addr, void *peb );
+ extern void *ios_jit_current_peb(void);   /* virtual_ios.c */
+ extern int ios_jit_pool_pc_is_fex( uintptr_t pc );   /* virtual_ios.c */
+ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *via, void *peb );
++static void ios_usd_probe_resolve( void );   /* sr2-launcher: MADEIRA_USD_PROBE */
+ 
+ /* LSE read-modify-write atomics for the Mach alias-store emulator, each done as
+  * ONE host atomic on the RW alias, which maps the same physical pages as the
+@@ -3217,6 +3218,7 @@ static void *ios_mach_exception_thread( void *arg )
+     ios_exc_thread_alive = 1;
+     ios_jit_dump_remove_stale();
+     ios_fgr_resolve();   /* MADEIRA_FAULT_GUARD_RATE */
++    ios_usd_probe_resolve();   /* sr2-launcher: MADEIRA_USD_PROBE */
+ 
+     for (;;)
+     {
+@@ -14759,6 +14761,49 @@ static int ios_subfloor_backing_probe( uintptr_t real, unsigned bytes, int need_
+     return 1;
+ }
+ 
++/* sr2-launcher: a read of KUSER_SHARED_DATA needs no region query.
++ *
++ * ios_subfloor_backing_probe asks the kernel about the backing of every access
++ * this function services (mach_vm_region_recurse). For an object that is mapped
++ * more than once the kernel answers by walking every entry of the task's map
++ * (xnu's vm_map_region_walk; osfmk/mach/vm_region.h has
++ * VM_REGION_INFO_FLAGS_NO_ALIASED, "(perf)", for skipping that), and the shared
++ * data page is such an object. Slime Rancher 2 reads the tick count at
++ * 0x7ffe0320 about 100-130 times a second: three of ten stack dumps of the
++ * exception thread were inside that query, and the thread used 47 % of a core,
++ * rising to over 90 % as the map grew, with every faulting game thread waiting
++ * for it (iPhone 16 Pro Max, 2026-11-09).
++ *
++ * The window onto the page is registered once, for every process, onto
++ * user_shared_data (virtual_ios.c, ml952), which stays mapped and readable for
++ * the whole session, and ios_exc_usd is that pointer. So a read that lies
++ * wholly inside the page and translates to exactly that mapping cannot touch
++ * unmapped backing, which is all the probe guards against. Writes, other
++ * windows and low allocations still take the probe.
++ * MADEIRA_USD_PROBE=1 probes these reads too, as before. */
++/* sr2:usd-probe:begin */
++static int ios_usd_probe_keep;
++static unsigned long long ios_usd_probe_skips;
++
++static int ios_usd_read_needs_no_probe( uint64_t addr, uintptr_t real, unsigned bytes, int is_write )
++{
++    if (ios_usd_probe_keep || is_write || !bytes || !ios_exc_usd) return 0;
++    if (addr < 0x7ffe0000ull || addr >= 0x7ffe1000ull || bytes > 0x7ffe1000ull - addr) return 0;   /* wholly inside the page */
++    if (real != ios_exc_usd + (uintptr_t)(addr - 0x7ffe0000ull)) return 0;
++    __sync_fetch_and_add( &ios_usd_probe_skips, 1 );
++    return 1;
++}
++/* sr2:usd-probe:end */
++
++static void ios_usd_probe_resolve( void )
++{
++    const char *e = getenv( "MADEIRA_USD_PROBE" );   /* env.MADEIRA_USD_PROBE = 1 */
++
++    ios_usd_probe_keep = e && e[0] == '1';
++    dprintf( 2, "[subfloor] sr2 KUSER_SHARED_DATA reads %s the backing probe (MADEIRA_USD_PROBE)\n",
++             ios_usd_probe_keep ? "keep" : "skip" );
++}
++
+ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *via, void *peb )
+ {
+     uint64_t addr = (uint64_t)(uintptr_t)fault_addr;
+@@ -14858,7 +14903,7 @@ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *
+         }
+     }
+ 
+-    if (cls &&
++    if (cls && !ios_usd_read_needs_no_probe( addr, real, bytes, is_write ) &&
+         !ios_subfloor_backing_probe( real, bytes, is_write, &rb, &rs, &cur, &mx, &kr ))
+     {
+         /* Capture, then decline. Declining lands on exactly the path an
+@@ -15015,9 +15060,9 @@ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *
+     }
+     if ((++ios_subfloor_hits & 0xFFF) == 1)
+         dprintf( 2, "[subfloor] ml956 serviced %llu access(es) (%llu unhandled, %llu refused) via=%s; "
+-                 "latest guest %#llx -> real %#llx insn=%#010x\n",
++                 "latest guest %#llx -> real %#llx insn=%#010x usd-probe-skips=%llu\n",
+                  ios_subfloor_hits, ios_subfloor_unknown, ios_subfloor_refused, via,
+-                 (unsigned long long)addr, (unsigned long long)real, insn );
++                 (unsigned long long)addr, (unsigned long long)real, insn, ios_usd_probe_skips );
+     return 1;
+ }
+ #endif

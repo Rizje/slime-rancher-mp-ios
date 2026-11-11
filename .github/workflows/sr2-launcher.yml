@@ -1,0 +1,607 @@
+# SR2 Launcher: Madeira v0.2.0 with the patches in launcher/patches, built into an IPA.
+#
+# This is Madeira's own .github/workflows/build.yml at that tag (willfaust/Madeira, the commit in
+# launcher/UPSTREAM) with these changes: each job checks out Madeira at that commit and this
+# repository into .sr2, and launcher/apply.sh puts the patches on as one commit; the IPA cache key
+# starts sr2-v1 and ends with the bundle identifier; a checks job runs launcher/check.sh; the IPA is
+# verified (launcher/verify-ipa.sh), uploaded as SR2Launcher.ipa and published as a prerelease.
+# Jobs, runner image, cache keys and time limits are Madeira's, so stock and patched runs share
+# every cache but the app's.
+#
+# Stock Madeira (no patches, not published): run the workflow with "stock" ticked, or push a commit
+# whose message contains [sr2 stock].
+name: SR2 Launcher IPA
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths: ['launcher/**', '.github/workflows/sr2-launcher.yml']
+  workflow_dispatch:
+    inputs:
+      stock:
+        description: Build Madeira v0.2.0 without the SR2 Launcher patches (a pipeline check, not published)
+        type: boolean
+        default: false
+      bundle_id:
+        description: Bundle identifier. com.willfaust.madeora installs over Madeira and keeps the game, saves and sign-in
+        type: string
+        default: com.willfaust.madeora
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sr2-launcher-${{ github.ref }}-${{ (github.event_name == 'workflow_dispatch' && inputs.stock) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[sr2 stock]')) }}
+  cancel-in-progress: true
+
+env:
+  MADEIRA_REPOSITORY: willfaust/Madeira
+  MADEIRA_COMMIT: 5fda6a0e9543e5de1df010aff35748ab913fd0d9
+  SR2_STOCK: ${{ (github.event_name == 'workflow_dispatch' && inputs.stock) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[sr2 stock]')) }}
+  SR2_BUNDLE_ID: ${{ inputs.bundle_id || 'com.willfaust.madeora' }}
+
+# A complete IPA cache is scoped by the checked-out tree and build environment.
+# Native libraries and runtime components have separate source/SDK caches.
+# xcode-27: the ntdll unix side uses iOS 27 SDK fields (rusage_info_v6.ri_page_wait_time_mach).
+
+jobs:
+  plan:
+    runs-on: xcode-27
+    outputs:
+      ipa: ${{ steps.key.outputs.ipa }}
+      reuse: ${{ steps.ipa.outputs.cache-hit }}
+      sdk: ${{ steps.sdk.outputs.key }}
+      ipaenv: ${{ steps.sdk.outputs.ipa }}
+      stock: ${{ env.SR2_STOCK }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          if ! [[ "$SR2_BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+            echo "::error::bundle_id '$SR2_BUNDLE_ID' is not a bundle identifier (letters, digits, hyphens, dots)"; exit 1
+          fi
+          if [[ "$SR2_STOCK" == true && "$SR2_BUNDLE_ID" != com.willfaust.madeora ]]; then
+            echo "::error::a stock build keeps Madeira's bundle identifier"; exit 1
+          fi
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - name: Check build reuse rules
+        run: |
+          python3 tests/host/check-build-inputs.py
+          python3 tests/host/check-ci-component-keys.py
+          python3 tests/host/check-ci-llvm-cache.py
+          python3 tests/host/check-clean-bootstrap.py
+          python3 tests/host/check-app-link-inputs.py
+          python3 tests/host/check-runtime-components.py
+      - name: Check touch control layouts and editor
+        run: python3 tests/host/check-control-presets.py
+      - name: Check Steam connection recovery
+        if: hashFiles('tests/host/check-steam-cm-transport.py') != ''
+        run: python3 tests/host/check-steam-cm-transport.py
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: key
+        run: echo "ipa=sr2-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdk.outputs.ipa }}-$(git rev-parse 'HEAD^{tree}')-${SR2_BUNDLE_ID}" >> "$GITHUB_OUTPUT"
+      - id: ipa
+        uses: actions/cache/restore@v4
+        with:
+          key: ${{ steps.key.outputs.ipa }}
+          path: dist/Madeira.ipa
+          lookup-only: true
+
+  # SR2 Launcher: launcher/check.sh (patch 0001's helper, the settings' keys, Madeira's host checks
+  # stock against patched, and the recommended-settings Swift fixture). The release waits for it.
+  checks:
+    needs: plan
+    if: needs.plan.outputs.stock != 'true'
+    runs-on: xcode-27
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: launcher/check.sh
+        env:
+          SR2_REQUIRE_SWIFT: '1'
+        run: |
+          mv .sr2 "$RUNNER_TEMP/sr2"
+          bash "$RUNNER_TEMP/sr2/launcher/check.sh" "$GITHUB_WORKSPACE"
+
+  reuse:
+    needs: plan
+    if: needs.plan.outputs.reuse == 'true'
+    runs-on: xcode-27
+    env:
+      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
+      MADEIRA_RUNTIME_SDK: ${{ needs.plan.outputs.sdk }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - uses: actions/cache/restore@v4
+        with:
+          key: ${{ needs.plan.outputs.ipa }}
+          path: dist/Madeira.ipa
+          fail-on-cache-miss: true
+      - name: Validate cached IPA
+        run: |
+          test -s dist/Madeira.ipa
+          unzip -tq dist/Madeira.ipa
+          python3 tools/build/runtime-components.py ipa dist/Madeira.ipa
+      - name: Verify and name the IPA
+        id: name
+        run: |
+          variant=$([[ "$SR2_STOCK" == true ]] && echo stock || echo launcher)
+          bash "$RUNNER_TEMP/sr2/launcher/verify-ipa.sh" dist/Madeira.ipa "$variant" "$SR2_BUNDLE_ID" app/Madeira/Madeira.entitlements
+          file=$([[ "$variant" == stock ]] && echo Madeira-stock.ipa || echo SR2Launcher.ipa)
+          cp dist/Madeira.ipa "dist/$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "artifact=${file%.ipa}-ipa" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.artifact }}
+          path: dist/${{ steps.name.outputs.file }}
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+
+  llvm:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
+    runs-on: xcode-27
+    env:
+      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdk.outputs.key }}-llvm-ios-15.0.7-${{ hashFiles('tools/build/build-llvm-ios.sh') }}
+          path: |
+            toolchains/llvm-ios-build/.madeira-cache.sha256
+            toolchains/llvm-ios-build/lib/*.a
+            toolchains/llvm-ios-build/include
+            toolchains/llvm-project/llvm/include
+      - name: Build LLVM for iOS
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja || true
+          tools/build/build-llvm-ios.sh
+      - name: Retain LLVM outputs for this run
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-llvm-${{ steps.sdk.outputs.key }}
+          path: |
+            toolchains/llvm-ios-build/.madeira-cache.sha256
+            toolchains/llvm-ios-build/lib/*.a
+            toolchains/llvm-ios-build/include
+            toolchains/llvm-project/llvm/include
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  fex:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
+    runs-on: xcode-27
+    env:
+      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
+    timeout-minutes: 360
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: key
+        run: echo "key=fex-ios-$(git rev-parse HEAD:FEX)-${{ hashFiles('tools/build/build-fex-ios.sh', 'build/fex-ios/build.sh') }}" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-${{ steps.key.outputs.key }}
+          path: |
+            FEX/build-ios
+            !FEX/build-ios/**/*.o
+      - name: Build FEX for iOS
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install ninja || true
+          git submodule update --init --recursive --depth 1 FEX
+          tools/build/build-fex-ios.sh
+      - name: Retain FEX outputs for this run
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fex-${{ steps.sdk.outputs.key }}
+          path: |
+            FEX/build-ios
+            !FEX/build-ios/**/*.o
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  i386:
+    needs: plan
+    if: needs.plan.outputs.reuse != 'true'
+    runs-on: xcode-27
+    env:
+      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
+    timeout-minutes: 360
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: key
+        run: echo "key=i386-windows-$(git rev-parse HEAD:wine)-$(git rev-parse HEAD:dxmt)-${{ hashFiles('build/wine-i386/**', 'build/dxmt-patches/**', 'tools/build/setup-llvm-mingw.sh', 'tools/build/build-shader-headers.sh') }}" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-${{ steps.key.outputs.key }}
+          path: app/Madeira/i386-windows
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          key: mingw-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/setup-llvm-mingw.sh') }}
+          path: toolchains/llvm-mingw-*
+      - name: Build the 32-bit (i386) Windows DLLs
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install meson ninja bison || true
+          export PATH="$(brew --prefix bison)/bin:$PATH"
+          git submodule update --init --depth 1 wine
+          git submodule update --init --recursive --depth 1 dxmt
+          tools/build/setup-llvm-mingw.sh
+          # DXMT's i386 build compiles Metal shaders: it needs the Metal toolchain
+          # and the Xcode 27 atomic fix that build-shader-headers.sh applies.
+          xcodebuild -downloadComponent MetalToolchain
+          tools/build/build-shader-headers.sh
+          build/wine-i386/build.sh
+      - if: failure()
+        run: tail -150 wine/build-i386/madeira-i386-build.log || true
+      - name: Retain i386 outputs for this run
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-i386-${{ steps.sdk.outputs.key }}
+          path: app/Madeira/i386-windows
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  runtime:
+    needs: [plan, llvm]
+    if: needs.plan.outputs.reuse != 'true'
+    runs-on: xcode-27
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [dock, windows, moltenvk, zink, mesa-d3d12, vulkan-pe, kosmickrisp]
+    env:
+      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
+      MADEIRA_RUNTIME_SDK: ${{ needs.plan.outputs.sdk }}
+      MADEIRA_RUNTIME_REUSE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: key
+        run: python3 tools/build/runtime-components.py key '${{ matrix.component }}' >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          key: ${{ steps.key.outputs.key }}
+          path: .runtime-cache/${{ matrix.component }}
+      - if: contains(fromJSON('["dock","windows","mesa-d3d12","vulkan-pe"]'), matrix.component)
+        uses: actions/cache@v4
+        with:
+          key: mingw-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/setup-llvm-mingw.sh') }}
+          path: toolchains/llvm-mingw-*
+      - if: matrix.component == 'windows'
+        uses: actions/download-artifact@v4
+        with:
+          name: native-llvm-${{ needs.plan.outputs.sdk }}
+          path: toolchains
+      - name: Build or verify runtime component
+        run: python3 tools/build/runtime-components.py build '${{ matrix.component }}'
+      # Each completed component survives a failure in another component or app.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.component }}
+          path: .runtime-cache
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  app:
+    needs: [plan, llvm, fex, i386, runtime]
+    if: needs.plan.outputs.reuse != 'true'
+    runs-on: xcode-27
+    env:
+      MADEIRA_PLANNED_SDK: ${{ needs.plan.outputs.sdk }}
+      MADEIRA_PLANNED_IPA: ${{ needs.plan.outputs.ipaenv }}
+      MADEIRA_RUNTIME_SDK: ${{ needs.plan.outputs.sdk }}
+      MADEIRA_RUNTIME_REUSE: '1'
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MADEIRA_REPOSITORY }}
+          ref: ${{ env.MADEIRA_COMMIT }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: .sr2
+          persist-credentials: false
+      - name: SR2 Launcher patches
+        run: |
+          bash .sr2/launcher/apply.sh
+          mv .sr2 "$RUNNER_TEMP/sr2"
+      - id: sdk
+        run: bash tools/build/ci-input-key.sh
+      - id: cache-llvm
+        uses: actions/cache/restore@v4
+        with:
+          key: plan19-${{ runner.os }}-${{ runner.arch }}-${{ steps.sdk.outputs.key }}-llvm-ios-15.0.7-${{ hashFiles('tools/build/build-llvm-ios.sh') }}
+          path: |
+            toolchains/llvm-ios-build/.madeira-cache.sha256
+            toolchains/llvm-ios-build/lib/*.a
+            toolchains/llvm-ios-build/include
+            toolchains/llvm-project/llvm/include
+      - id: cache-fex
+        uses: actions/cache/restore@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-${{ needs.fex.outputs.key }}
+          path: |
+            FEX/build-ios
+            !FEX/build-ios/**/*.o
+      - id: cache-i386
+        uses: actions/cache/restore@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-${{ needs.i386.outputs.key }}
+          path: app/Madeira/i386-windows
+      # These artifacts belong to this workflow run and the planned SDK.
+      - name: Recover LLVM outputs from this run
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: native-llvm-${{ needs.plan.outputs.sdk }}
+          path: toolchains
+      - name: Recover FEX outputs from this run
+        if: steps.cache-fex.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: native-fex-${{ needs.plan.outputs.sdk }}
+          path: FEX/build-ios
+      - name: Recover i386 outputs from this run
+        id: transfer-i386
+        if: steps.cache-i386.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: native-i386-${{ needs.plan.outputs.sdk }}
+          path: app/Madeira/i386-windows
+      # Independent caches retain libraries whose own build inputs have not changed.
+      - id: pins
+        run: |
+          echo "wine=$(git rev-parse HEAD:wine)" >> "$GITHUB_OUTPUT"
+          echo "dxmt=$(git rev-parse HEAD:dxmt)" >> "$GITHUB_OUTPUT"
+      # Seed the split caches only when every legacy input still matches.
+      - uses: actions/cache/restore@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-deps-v2-${{ hashFiles('build/gnutls-ios/**', 'build/ffmpeg/build.sh', 'build/ffmpeg/src/**', 'build/freetype-ios/build.sh', 'tools/build/build-freetype-ios.sh', 'tools/build/setup-llvm-mingw.sh') }}
+          path: |
+            toolchains/llvm-mingw-*
+            toolchains/gnutls-ios
+            build/gnutls-ios/obj/*.done
+            toolchains/ffmpeg-ios
+            build/ffmpeg/obj
+            build/freetype-ios/build
+            research/freetype
+      - id: cache-mingw
+        uses: actions/cache@v4
+        with:
+          key: mingw-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build/setup-llvm-mingw.sh') }}
+          path: toolchains/llvm-mingw-*
+      - id: cache-gnutls
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-gnutls-${{ hashFiles('build/gnutls-ios/build.sh', 'build/gnutls-ios/src/**', 'tools/build/sync-gnutls-libs.sh') }}
+          path: |
+            toolchains/gnutls-ios
+            build/gnutls-ios/obj/*.done
+      - id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-ffmpeg-${{ hashFiles('build/ffmpeg/build.sh', 'build/ffmpeg/src/**') }}
+          path: |
+            toolchains/ffmpeg-ios
+            build/ffmpeg/obj
+      - id: cache-freetype
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-freetype-${{ hashFiles('build/freetype-ios/build.sh', 'tools/build/build-freetype-ios.sh') }}
+          path: |
+            build/freetype-ios/build
+            research/freetype
+      - id: cache-rppairing
+        uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.rust }}-rppairing-${{ hashFiles('build/rppairing-ios/**', '.cargo/**', 'rust-toolchain', 'rust-toolchain.toml') }}
+          path: |
+            app/Madeira/libmadeira_rppairing.a
+            app/Madeira/legal/LICENSES-rppairing-crates.txt
+      - uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.key }}-wine-host-${{ steps.pins.outputs.wine }}-${{ hashFiles('tools/build/build-wine.sh', 'tools/build/setup-llvm-mingw.sh') }}
+          path: |
+            wine/build-macos
+            wine/build-arm64ec
+      - uses: actions/cache@v4
+        with:
+          key: plan19-${{ steps.sdk.outputs.graphics }}-dxmt-ios-${{ steps.pins.outputs.dxmt }}-${{ steps.pins.outputs.wine }}-${{ hashFiles('build/dxmt-ios/build.sh', 'build/dxmt-patches/**', 'tools/build/build-dxmt-ios.sh', 'tools/build/build-shader-headers.sh', 'tools/build/build-llvm-ios.sh', 'build/madeira-d3d12/deps.sh', 'madeira-d3d12/src/**', 'madeira-d3d12/tests/native/**', 'madeira-d3d12/third_party/**', 'app/Madeira/d3d12/**') }}
+          path: |
+            app/Madeira/libdxmt_combined.a
+            build/dxmt-ios/shader-headers
+      - name: Rebuild missing 32-bit DLLs
+        if: steps.cache-i386.outputs.cache-hit != 'true' && steps.transfer-i386.outcome != 'success'
+        run: |
+          brew install meson ninja bison
+          export PATH="$(brew --prefix bison)/bin:$PATH"
+          tools/build/setup-llvm-mingw.sh
+          xcodebuild -downloadComponent MetalToolchain
+          tools/build/build-shader-headers.sh
+          build/wine-i386/build.sh
+      - name: Recover runtime components from this run
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: .runtime-cache
+          merge-multiple: true
+      - name: Build IPA
+        env:
+          MADEIRA_BUNDLE_IDENTIFIER: ${{ env.SR2_BUNDLE_ID }}
+        run: |
+          MADEIRA_BUILD_STAMP="0.2.0 · SR2 Launcher 1 · $(date -u '+%m-%d %H:%M') UTC · run ${{ github.run_number }}"
+          export MADEIRA_BUILD_STAMP
+          tools/build-ipa.sh
+      - name: Verify and name the IPA
+        id: name
+        run: |
+          variant=$([[ "$SR2_STOCK" == true ]] && echo stock || echo launcher)
+          bash "$RUNNER_TEMP/sr2/launcher/verify-ipa.sh" dist/Madeira.ipa "$variant" "$SR2_BUNDLE_ID" app/Madeira/Madeira.entitlements
+          file=$([[ "$variant" == stock ]] && echo Madeira-stock.ipa || echo SR2Launcher.ipa)
+          cp dist/Madeira.ipa "dist/$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "artifact=${file%.ipa}-ipa" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/save@v4
+        with:
+          key: ${{ needs.plan.outputs.ipa }}
+          path: dist/Madeira.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.artifact }}
+          path: dist/${{ steps.name.outputs.file }}
+          if-no-files-found: error
+          overwrite: true
+          compression-level: 0
+
+  # SR2 Launcher: a prerelease with SR2Launcher.ipa, so the phone can download it in Safari.
+  release:
+    needs: [plan, checks, reuse, app]
+    if: always() && needs.plan.outputs.stock != 'true' && needs.checks.result == 'success' && (needs.app.result == 'success' || needs.reuse.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: SR2Launcher-ipa
+      - name: Publish the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: sr2-launcher-${{ github.run_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          test -s SR2Launcher.ipa
+          sha=$(sha256sum SR2Launcher.ipa | cut -d' ' -f1)
+          cat > notes.md <<EOF
+          SR2 Launcher: Madeira v0.2.0 (willfaust/Madeira \`${MADEIRA_COMMIT:0:7}\`) with the patches in [launcher/patches](https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}/launcher/patches), built by [this run](${RUN_URL}) from \`${GITHUB_SHA:0:7}\`.
+
+          **Install:** on the iPhone, download \`SR2Launcher.ipa\` below in Safari, open it in SideStore and keep the app extensions. Bundle identifier \`${SR2_BUNDLE_ID}\`: it replaces Madeira and keeps the game, saves and Steam sign-in. Steps, checks and how to undo: [launcher/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/launcher/README.md).
+
+          SHA-256 \`${sha}\`
+
+          A modified version of Madeira, GPL-3.0-or-later: [launcher/COPYING.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/launcher/COPYING.md). It contains no game files.
+          EOF
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" SR2Launcher.ipa --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" SR2Launcher.ipa --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "SR2 Launcher, build ${{ github.run_number }}" --notes-file notes.md
+          fi

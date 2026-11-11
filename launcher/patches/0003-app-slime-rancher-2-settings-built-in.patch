@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH 3/4] app: Slime Rancher 2 settings built in
+
+GameRecommendations.slimeRancher2, recognised by Steam App ID 1657630, the
+"Slime Rancher 2" Steam folder or SlimeRancher2.exe: the config the game ran
+with on an iPhone 16 Pro Max (2026-11-09 and 11-10), plus two diagnostics-only
+lines: MADEIRA_PROBES = light (no thread-suspending samplers) and
+MADEIRA_LEAN_DIAG = 1 (the pool warmer's region sweep and zone check once a
+minute); 960x540 with MetalFX 2x, fit, a 30 FPS limit and no launch arguments
+(which removes -force-d3d12).
+
+GameRecommendation gains two optional fields, arguments and metalFXUpscale,
+which Reset to Recommended and first sight copy to the library entry.
+
+This build exists for the game, so an entry already in the library takes the
+whole list once per list version, also over a config of its own (what Reset
+to Recommended does); the replaced config and arguments go to the log first.
+After that the player's changes stay until the list's version rises.
+
+check-game-recommendations.py knows the list, and its Swift fixture checks
+recognition, the one-time takeover, that later changes stay, and Reset.
+---
+ app/Madeira/GameRecommendations.swift      | 38 ++++++++++++++++++++++
+ app/Madeira/GameRecommendationsApply.swift | 25 ++++++++++++++
+ tests/host/check-game-recommendations.py   | 36 ++++++++++++++++++--
+ 3 files changed, 97 insertions(+), 2 deletions(-)
+
+diff --git a/app/Madeira/GameRecommendations.swift b/app/Madeira/GameRecommendations.swift
+index 1dacbf7..c3016c5 100644
+--- a/app/Madeira/GameRecommendations.swift
++++ b/app/Madeira/GameRecommendations.swift
+@@ -84,6 +84,10 @@ struct GameRecommendation: Equatable {
+     /// Lines only a device with less than 12 GB of RAM gets, after `config`
+     /// (GameRecommendations.smallRAMDevice). nil: every device gets the same list.
+     var smallRAMConfig: String? = nil
++    /// SR2 Launcher: Game details › Launch arguments (LibraryEntry.arguments); "" clears them.
++    var arguments: String? = nil
++    /// SR2 Launcher: Display › MetalFX upscaling (LibraryEntry.metalFXUpscale: 1.5 or 2).
++    var metalFXUpscale: Double? = nil
+ 
+     /// The config file's text as GameProfile stores it (one trailing newline): `config`,
+     /// and on a device with less than 12 GB of RAM `smallRAMConfig` after it.
+@@ -109,6 +113,8 @@ struct GameRecommendation: Equatable {
+             parts.append("FPS limit \(label)")
+         }
+         if let resolution { parts.append(resolution == Self.screen720 ? "this screen's shape at 720 lines" : resolution) }
++        if let metalFXUpscale { parts.append("MetalFX upscaling " + String(format: "%g", metalFXUpscale) + "x") }
++        if let arguments { parts.append(arguments.isEmpty ? "no launch arguments" : "launch arguments \(arguments)") }
+         if launchMode == "desktop" { parts.append("starts in the Wine desktop") }
+         if startServices == true { parts.append("Windows services first") }
+         return parts.joined(separator: ", ")
+@@ -1392,6 +1398,8 @@ extension GameRecommendations {
+     }
+ 
+     static let steamTitles: [SteamTitle] = [
++        SteamTitle(appIDs: [slimeRancher2AppID], folders: ["slime rancher 2"],
++                   programs: ["slimerancher2.exe"], steamPrograms: [], list: slimeRancher2),
+         SteamTitle(appIDs: [2537590], folders: ["msfs2024"],
+                    programs: ["flightsimulator2024.exe"], steamPrograms: [], list: msfs2024),
+         SteamTitle(appIDs: [730], folders: ["counter-strike global offensive"],
+@@ -1533,6 +1541,36 @@ extension GameRecommendations {
+         """,
+         avx: false, nvidia: false, wineVCRT: false, display: "fit")
+ 
++    /// Slime Rancher 2 (Steam App ID 1657630): the game SR2 Launcher is built for. Device-tested on an
++    /// iPhone 16 Pro Max (A18 Pro, 8 GB), 2026-11-09 and 11-10, on Madeira 0.2.0. All but the last
++    /// two lines are the config those runs used, less their FEX_MEMCPYSETTSOENABLED = 0 (FEX logged
++    /// memcpyset=false without it: its default). donor-pool-guard with the 2 GB donor pool and 4 GB swap
++    /// tier (SR2Launcher.seedDefaults) lets the world load inside the 6 GB an app gets; the FPS
++    /// governor holds the CPU near 2 W so the thermal clamp comes later. The last two lines are
++    /// diagnostics only: MADEIRA_PROBES = light leaves the counters ([xp], [xp-t]) and stops the
++    /// samplers that suspend the game's threads; MADEIRA_LEAN_DIAG = 1 (as in Horizon Forbidden West's
++    /// tested lists) runs the pool warmer's region sweep and zone check once a minute, not every 2-10 s.
++    /// 960x540 with MetalFX 2x and a 30 FPS limit is the display setup of those runs; the game's
++    /// Options page stays white at that size (1280x720 shows it). No launch arguments: with
++    /// -force-d3d12 and a D3D11On12 bridge the game ran on madeira-d3d12 at 9-15 FPS against
++    /// 28-30 on DXMT.
++    static let slimeRancher2AppID = 1657630
++    static let slimeRancher2 = GameRecommendation(
++        id: "slime-rancher-2", title: "Slime Rancher 2", version: 1,
++        config: """
++        # Madeira's recommended settings for Slime Rancher 2 (SR2 Launcher's list).
++        # Reset to Recommended, at the bottom of the game's settings, brings them back.
++        env.MADEIRA_EC_HOOK_TRACE = 0
++        donor-pool-guard = 1
++        env.FEX_VECTORTSOENABLED = 0
++        env.MADEIRA_FPS_GOV_MW = 2000
++        env.MADEIRA_FPS_GOV_MAX = 30
++        env.MADEIRA_FPS_GOV_MIN = 20
++        env.MADEIRA_PROBES = light
++        env.MADEIRA_LEAN_DIAG = 1
++        """,
++        fpsMode: 3, resolution: "960x540", display: "fit", arguments: "", metalFXUpscale: 2)
++
+     /// The Escapists 2 (Steam App ID 641990). Device-tested on an iPhone 17 Pro Max (2026-10-30, "works perfect").
+     /// A 32-bit Unity game on its own old mono.dll: Mono's XCHG code patches at unaligned addresses faulted through
+     /// the JIT pool's alias, so its code memory stays plain read/write (MADEIRA_WOW_RWX_PLAIN).
+diff --git a/app/Madeira/GameRecommendationsApply.swift b/app/Madeira/GameRecommendationsApply.swift
+index 82572a3..9338486 100644
+--- a/app/Madeira/GameRecommendationsApply.swift
++++ b/app/Madeira/GameRecommendationsApply.swift
+@@ -36,6 +36,8 @@ extension GameRecommendations {
+     /// What Madeira did for which game: [lowercased Windows path: "<id>#<version>#<file hash>"
+     /// for a recommendation it wrote, "" for a game that kept its own config].
+     private static let appliedKey = "madeira.recommended.applied"
++    /// SR2 Launcher: the version of the Slime Rancher 2 list this install has taken in full.
++    private static let sr2AppliedKey = "sr2launcher.applied"
+ 
+     private enum Write: String { case firstSight = "first sight", updated, reset }
+ 
+@@ -58,6 +60,27 @@ extension GameRecommendations {
+     /// changed, so the caller saves the entry.
+     @discardableResult
+     static func prepare(_ entry: inout LibraryEntry, new: Bool = false) -> Bool {
++        // SR2 Launcher: this build exists for Slime Rancher 2, so that game takes its whole list once
++        // per list version, also when it is already in the library with a config of its own (what
++        // Reset to Recommended does). The config it replaces goes to the log first; later changes
++        // by the player stay until the list's version rises.
++        if entry.desktop != true, let rec = recommendation(for: entry), rec.id == slimeRancher2.id,
++           UserDefaults.standard.integer(forKey: sr2AppliedKey) < rec.version {
++            let previous = (GameProfile(windowsPath: entry.windowsPath).text + (entry.config ?? ""))
++                .trimmingCharacters(in: .whitespacesAndNewlines)
++            if !previous.isEmpty {
++                LogStore.shared.log("[recommended] \(entry.title): the config \(rec.id) v\(rec.version) replaces:\n\(previous)")
++            }
++            if !entry.arguments.isEmpty {
++                LogStore.shared.log("[recommended] \(entry.title): the launch arguments it replaces: \(entry.arguments)")
++            }
++            entry.config = nil
++            if put(rec, to: entry.windowsPath, .reset, title: entry.title) {
++                takeEntryFields(rec, &entry)
++                UserDefaults.standard.set(rec.version, forKey: sr2AppliedKey)
++                return true
++            }
++        }
+         if let found = due(entry.windowsPath, recommendation(for: entry), ownLines: entry.config, title: entry.title),
+            put(found.rec, to: entry.windowsPath, found.kind, title: entry.title, switches: new), found.kind == .firstSight {
+             // A game already in the library keeps its own fields and switches (resolution,
+@@ -177,6 +200,8 @@ extension GameRecommendations {
+             else if let lines720 = ResolutionChoices.screen720Value { entry.resolution = lines720 }
+         }
+         if let mode = rec.display { entry.display = mode == DisplayMode.fit.rawValue ? nil : mode }
++        if let text = rec.arguments { entry.arguments = text }
++        if let factor = rec.metalFXUpscale { entry.metalFXUpscale = factor }
+         if let mode = rec.launchMode { entry.launchMode = mode == "desktop" ? mode : nil }
+         if let on = rec.startServices { entry.startServices = on ? true : nil }
+     }
+diff --git a/tests/host/check-game-recommendations.py b/tests/host/check-game-recommendations.py
+index a6a8b63..82a447e 100644
+--- a/tests/host/check-game-recommendations.py
++++ b/tests/host/check-game-recommendations.py
+@@ -74,7 +74,8 @@ MERGED = {'msfs-2024', 'counter-strike-2', 'breakneck', 'spelunky-2', 'albion-on
+           'batman-arkham-city-goty', 'trails-in-the-sky-1st-chapter', 'subnautica-2', 'rdr1-steam', 'resident-evil-requiem', 'resident-evil-requiem-demo',
+           'life-is-strange-remastered', 'life-is-strange-2', 'project-zomboid', 'spiderheck', 'rounds', 'plateup',
+           'final-fantasy-tactics-ivalice-chronicles', 'jetboard-joust', 'dead-as-disco', 'tung', 'sekiro-shadows-die-twice', 'stardew-valley',
+-          'glyphica-typing-survival', 'the-adventures-of-elliot', 'the-escapists-2', 'garrys-mod'}
++          'glyphica-typing-survival', 'the-adventures-of-elliot', 'the-escapists-2', 'garrys-mod',
++          'slime-rancher-2'}   # SR2 Launcher's own list (GameRecommendations.slimeRancher2), recognised by the same table
+ assert set(presets) == {'rdr2-steam', 'rdr2-other', 'gta5e-steam', 'gta5e-other', 'gta5l-steam', 'gta5l-other', 'gta4-steam',
+                         'ghost-of-tsushima', 'god-of-war', 'horizon-zero-dawn', 'horizon-forbidden-west', 'ratchet-clank-rift-apart',
+                         'crysis-remastered', 'crysis-2-remastered', 'crysis-3-remastered', 'rockstar-launcher', 'rockstar-launcher-setup',
+@@ -167,7 +168,8 @@ for ident, p in presets.items():
+         p['tested'], p['fork'] = [line for line in p['lines'][2:] if not line.startswith('#')], []
+         continue
+     # The Fallout lists are the standard one plus a switch: the games ran with it.
+-    if ident in ('standard', 'fallout-new-vegas', 'fallout-3', 'black-ops-1', 'black-ops-2', 'borderlands-2'):
++    # Slime Rancher 2 (SR2 Launcher) ran on upstream 0.2.0 with the standard list plus its own lines.
++    if ident in ('standard', 'fallout-new-vegas', 'fallout-3', 'black-ops-1', 'black-ops-2', 'borderlands-2', 'slime-rancher-2'):
+         assert not set(FORK_DEFAULTS) & set(p['lines']), (ident, "the standard list has none of madeira-bcd's defaults")
+         p['tested'], p['fork'] = p['lines'][2:], []
+         continue
+@@ -640,6 +642,8 @@ struct LibraryEntry {
+     var semaphoreFastPath: Bool? = nil
+     var launchMode: String? = nil
+     var startServices: Bool? = nil
++    var arguments = ""                    // SR2 Launcher: a list can set these two (Library.swift's types)
++    var metalFXUpscale: Double? = nil
+ }
+ 
+ final class PrefStore {
+@@ -972,6 +976,34 @@ check(R.prepare(&gotOwn, new: true) && LibraryPrefs.avx(got) && LibraryPrefs.nvi
+ check(LogStore.shared.lines.contains { $0.hasPrefix("[recommended] Red Dead Redemption 2: rdr2-steam v\(R.rdr2Steam.version) written (first sight)") }, "log line")
+ UserDefaults.standard.removeObject(forKey: key)
+ print("PASS: drive_c is looked up for a program's list; a new entry takes the fields of a list written for its path before")
++
++// SR2 Launcher: Slime Rancher 2's list is recognised like the other Steam titles, and taken in full once per
++// list version even by an entry that has a config of its own; after that the player's changes stay.
++let sr2Key = "sr2launcher.applied"
++UserDefaults.standard.removeObject(forKey: sr2Key)
++let sr2 = steam + #"\Slime Rancher 2"#
++check(id(sr2, 1657630) == "slime-rancher-2" && id(sr2) == "slime-rancher-2" && id(sr2 + #"\SlimeRancher2.exe"#) == "slime-rancher-2",
++      "Slime Rancher 2 by App ID, folder and program")
++GameProfile(windowsPath: sr2).text = "env.MADEIRA_EC_HOOK_TRACE = 0\nenv.FEX_MEMCPYSETTSOENABLED = 0\n"
++var slime = LibraryEntry(title: "Slime Rancher 2", windowsPath: sr2, steamAppID: 1657630)
++slime.config = "fence-chain = 1"; slime.arguments = "-force-d3d12"; slime.fpsMode = 2; slime.display = "fill"
++check(R.prepare(&slime) && file(sr2) == R.slimeRancher2.fileText && slime.config == nil && slime.arguments == ""
++      && slime.metalFXUpscale == 2 && slime.fpsMode == 3 && slime.resolution == "960x540" && slime.display == nil,
++      "Slime Rancher 2 with a config of its own takes the whole list")
++check(UserDefaults.standard.integer(forKey: sr2Key) == R.slimeRancher2.version, "the list's version is recorded")
++check(LogStore.shared.lines.contains { $0.contains("slime-rancher-2 v1 replaces:") && $0.contains("FEX_MEMCPYSETTSOENABLED") && $0.contains("fence-chain = 1") }
++      && LogStore.shared.lines.contains { $0.hasSuffix("the launch arguments it replaces: -force-d3d12") }, "what it replaced is logged")
++GameProfile(windowsPath: sr2).text = R.slimeRancher2.fileText + "env.MADEIRA_FPS_GOV_MAX = 40\n"
++slime.arguments = "-screen-fullscreen 0"; slime.fpsMode = 1
++check(!R.prepare(&slime) && file(sr2).hasSuffix("env.MADEIRA_FPS_GOV_MAX = 40\n") && slime.arguments == "-screen-fullscreen 0"
++      && slime.fpsMode == 1, "once taken, the player's own changes stay")
++check(R.reset(&slime)?.id == "slime-rancher-2" && file(sr2) == R.slimeRancher2.fileText && slime.arguments == "" && slime.fpsMode == 3,
++      "Reset to Recommended brings the list back")
++check(R.slimeRancher2.switchSummary.contains("MetalFX upscaling 2x") && R.slimeRancher2.switchSummary.contains("no launch arguments"),
++      "Game details names the two new fields")
++UserDefaults.standard.removeObject(forKey: sr2Key)
++UserDefaults.standard.removeObject(forKey: key)
++print("PASS: Slime Rancher 2 (SR2 Launcher) takes its list once per version, keeps later changes, and resets to it")
+ '''
+ 
+ with tempfile.TemporaryDirectory(prefix='madeira-recommended-') as directory:

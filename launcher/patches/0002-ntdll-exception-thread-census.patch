@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH 2/4] ntdll: exception thread census
+
+One [exc-census] line every 5 s while the exception thread has work: messages
+served, handled, bad-access and breakpoint counts, the time from each receive
+to its reply (busy ms and share of a core), and what ios_subfloor_service did
+in the period, including the shared-data reads that skipped the region query.
+This thread's busy share is a ceiling on the whole program, because every
+faulting thread waits for its reply.
+
+Called once per message after the reply, from the exception thread only.
+env.MADEIRA_EXC_CENSUS = 0 turns the line off.
+---
+ build/ntdll-unix/signal_arm64_ios.c | 53 +++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+diff --git a/build/ntdll-unix/signal_arm64_ios.c b/build/ntdll-unix/signal_arm64_ios.c
+index 08249c2..d9c7b12 100644
+--- a/build/ntdll-unix/signal_arm64_ios.c
++++ b/build/ntdll-unix/signal_arm64_ios.c
+@@ -492,6 +492,7 @@ volatile int ios_exc_msg_count = 0;
+  * number for THIS workload so the W^X change has a before/after to beat.
+  * t0 is stamped at message receipt and consumed by the store emulator. */
+ volatile unsigned long long ios_store_fault_t0 = 0;
++static unsigned long long ios_exc_census_t0;   /* sr2-launcher [exc-census]: when this message was received */
+ volatile unsigned long long ios_store_fault_ticks = 0;
+ volatile unsigned long long ios_store_fault_n = 0;
+ volatile unsigned long long ios_store_fault_dropped = 0;   /* ml685 */
+@@ -2441,6 +2442,7 @@ extern void *ios_jit_current_peb(void);   /* virtual_ios.c */
+ extern int ios_jit_pool_pc_is_fex( uintptr_t pc );   /* virtual_ios.c */
+ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *via, void *peb );
+ static void ios_usd_probe_resolve( void );   /* sr2-launcher: MADEIRA_USD_PROBE */
++static void ios_exc_census_note( int exception, int handled );   /* sr2-launcher [exc-census] */
+ 
+ /* LSE read-modify-write atomics for the Mach alias-store emulator, each done as
+  * ONE host atomic on the RW alias, which maps the same physical pages as the
+@@ -3236,6 +3238,7 @@ static void *ios_mach_exception_thread( void *arg )
+         ios_exc_msg_count++;
+         ios_cur_fault_port = req->thread.name;              /* ml690 */
+         ios_store_fault_t0 = mach_absolute_time();          /* ml680 */
++        ios_exc_census_t0 = ios_store_fault_t0;             /* the store emulator clears ios_store_fault_t0 */
+ 
+         thread_t thread = req->thread.name;
+         int handled = 0;
+@@ -8436,6 +8439,7 @@ dispatch_guest_fault:
+         /* Deallocate the send rights we received */
+         mach_port_deallocate( mach_task_self(), thread );
+         mach_port_deallocate( mach_task_self(), req->task.name );
++        ios_exc_census_note( req->exception, handled );
+     }
+     return NULL;
+ }
+@@ -14795,6 +14799,8 @@ static int ios_usd_read_needs_no_probe( uint64_t addr, uintptr_t real, unsigned
+ }
+ /* sr2:usd-probe:end */
+ 
++static int ios_exc_census_off;
++
+ static void ios_usd_probe_resolve( void )
+ {
+     const char *e = getenv( "MADEIRA_USD_PROBE" );   /* env.MADEIRA_USD_PROBE = 1 */
+@@ -14802,6 +14808,53 @@ static void ios_usd_probe_resolve( void )
+     ios_usd_probe_keep = e && e[0] == '1';
+     dprintf( 2, "[subfloor] sr2 KUSER_SHARED_DATA reads %s the backing probe (MADEIRA_USD_PROBE)\n",
+              ios_usd_probe_keep ? "keep" : "skip" );
++    e = getenv( "MADEIRA_EXC_CENSUS" );   /* env.MADEIRA_EXC_CENSUS = 0 */
++    ios_exc_census_off = e && e[0] == '0';
++}
++
++/* sr2-launcher [exc-census]: what the exception thread costs, one line every 5 s
++ * while it has work.
++ *
++ * One thread serves the faults of every thread, one at a time, and the thread
++ * that faulted waits for the reply, so this thread's busy share is a ceiling on
++ * the whole program. The line gives the messages served, how many it handled,
++ * the two exception kinds that matter here, the time from each receive to its
++ * reply, and what ios_subfloor_service did in the period. It is called once per
++ * message after the reply, from this thread only. MADEIRA_EXC_CENSUS=0 turns
++ * the line off. */
++static void ios_exc_census_note( int exception, int handled )
++{
++    static unsigned long long first, ticks, msgs, done, access, brk, sf_prev, skip_prev;
++    static struct { unsigned int numer, denom; } tb;
++    extern int mach_timebase_info( void * );
++    unsigned long long now, span_ns, busy_ns;
++
++    if (ios_exc_census_off) return;
++    now = mach_absolute_time();
++    if (!tb.denom)
++    {
++        mach_timebase_info( &tb );
++        if (!tb.numer || !tb.denom) { tb.numer = 1; tb.denom = 1; }
++    }
++    if (!first) first = ios_exc_census_t0 ? ios_exc_census_t0 : now;
++    if (ios_exc_census_t0 && now > ios_exc_census_t0) ticks += now - ios_exc_census_t0;
++    msgs++;
++    if (handled) done++;
++    if (exception == EXC_BAD_ACCESS) access++;
++    else if (exception == EXC_BREAKPOINT) brk++;
++
++    span_ns = (now - first) * tb.numer / tb.denom;
++    if (span_ns < 5000000000ull) return;
++    busy_ns = ticks * tb.numer / tb.denom;
++    dprintf( 2, "[exc-census] sr2 %.1fs: msgs=%llu handled=%llu bad-access=%llu breakpoint=%llu "
++             "busy=%llu ms (%.1f%% of a core) avg=%llu us | subfloor +%llu usd-probe-skips +%llu\n",
++             (double)span_ns / 1e9, msgs, done, access, brk, busy_ns / 1000000ull,
++             100.0 * (double)busy_ns / (double)span_ns, busy_ns / msgs / 1000ull,
++             ios_subfloor_hits - sf_prev, ios_usd_probe_skips - skip_prev );
++    sf_prev = ios_subfloor_hits;
++    skip_prev = ios_usd_probe_skips;
++    first = now;
++    ticks = msgs = done = access = brk = 0;
+ }
+ 
+ static int ios_subfloor_service( ucontext_t *ctx, void *fault_addr, const char *via, void *peb )

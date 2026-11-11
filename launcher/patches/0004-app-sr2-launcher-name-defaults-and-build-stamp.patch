@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH 4/4] app: SR2 Launcher name, memory defaults and build stamp
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Info.plist: the app is called SR2 Launcher on the Home Screen.
+- SR2Launcher.seedDefaults (MadeiraConfig.swift), first in MadeiraApp.init:
+  once per install, on a device under 10 GB, writes the memory settings
+  Slime Rancher 2's world loaded with (swap-mb = 4096,
+  env.MADEIRA_SWAP_COVERAGE = wide, donor-pool-mb = 2048), each only where
+  madeira.cfg has no value for it.
+- The Setup Guide's About names this as a modified version of Madeira 0.2.0
+  and where its source is.
+- package-ipa.sh: MADEIRA_BUNDLE_IDENTIFIER overrides the project's bundle
+  identifier for the app and both extensions; Info.plist gets MadeiraBuild
+  (MADEIRA_BUILD_STAMP, else "0.2.0 · SR2 Launcher 1 · <UTC time>"), which
+  the [build] log line and Get Help show.
+---
+ app/Madeira/ContentView.swift   |  3 +++
+ app/Madeira/Info.plist          |  2 +-
+ app/Madeira/MadeiraApp.swift    |  3 +++
+ app/Madeira/MadeiraConfig.swift | 29 +++++++++++++++++++++++++++++
+ tools/build/package-ipa.sh      | 13 +++++++++++++
+ 5 files changed, 49 insertions(+), 1 deletion(-)
+
+diff --git a/app/Madeira/ContentView.swift b/app/Madeira/ContentView.swift
+index 0c85315..18bb9f3 100644
+--- a/app/Madeira/ContentView.swift
++++ b/app/Madeira/ContentView.swift
+@@ -3916,6 +3916,9 @@ struct SetupGuideView: View {
+                     Text("Madeira is a proof-of-concept for running x86 Windows games on iOS using FEX-Emu, Wine, and Metal-based graphics translation.")
+                         .font(.caption)
+                         .foregroundColor(.secondary)
++                    Text("SR2 Launcher is a modified version of Madeira 0.2.0, set up for Slime Rancher 2. Its changes and how to build it: github.com/Rizje/slime-rancher-mp-ios (folder launcher).")
++                        .font(.caption)
++                        .foregroundColor(.secondary)
+                 }
+             }
+             .navigationTitle("Setup Guide")
+diff --git a/app/Madeira/Info.plist b/app/Madeira/Info.plist
+index 15c078a..4dcaa8d 100644
+--- a/app/Madeira/Info.plist
++++ b/app/Madeira/Info.plist
+@@ -16,7 +16,7 @@
+ 	<key>CFBundleDevelopmentRegion</key>
+ 	<string>en</string>
+ 	<key>CFBundleDisplayName</key>
+-	<string>Madeira</string>
++	<string>SR2 Launcher</string>
+ 	<key>CFBundleDocumentTypes</key>
+ 	<array>
+ 		<dict>
+diff --git a/app/Madeira/MadeiraApp.swift b/app/Madeira/MadeiraApp.swift
+index 1043715..7d07b79 100644
+--- a/app/Madeira/MadeiraApp.swift
++++ b/app/Madeira/MadeiraApp.swift
+@@ -4,6 +4,9 @@ import SwiftUI
+ @main
+ struct MadeiraApp: App {
+     init() {
++        // SR2 Launcher: Slime Rancher 2's memory settings in madeira.cfg, once, before anything reads it.
++        let seeded = SR2Launcher.seedDefaults()
++        if !seeded.isEmpty { LogStore.shared.log("[sr2-launcher] madeira.cfg: " + seeded.joined(separator: " ") + " (first start)") }
+         // Opt-in iPhone pointer experiments (PhonePointer.m): before any scene exists.
+         madeira_phone_pointer_setup()
+         // madeira-bcd: the Metal Performance HUD's performance insights (the
+diff --git a/app/Madeira/MadeiraConfig.swift b/app/Madeira/MadeiraConfig.swift
+index e7d9ef0..271ba0f 100644
+--- a/app/Madeira/MadeiraConfig.swift
++++ b/app/Madeira/MadeiraConfig.swift
+@@ -271,3 +271,32 @@ enum MadeiraConfig {
+         return removed
+     }
+ }
++
++/// SR2 Launcher, a build of Madeira 0.2.0 for Slime Rancher 2: the memory settings Slime Rancher 2's world
++/// loaded with on an 8 GB iPhone (16 Pro Max, 2026-11-09): Settings › Memory & sync › Swap tier 4 GB, Swap
++/// coverage "1 MB+ and overflow" and Donor pool 2 GB, the keys that page writes. Once per install, on a
++/// device under 10 GB (GameRecommendations.smallRAMDevice), and only keys madeira.cfg does not have: a value
++/// set by hand stays, and a change made later in Settings is never undone. Foundation only, because the
++/// host checks compile this file on its own.
++enum SR2Launcher {
++    static let seededKey = "sr2launcher.seeded.1"
++    static let memoryDefaults: [(key: String, value: String)] = [
++        ("swap-mb", "4096"), ("env.MADEIRA_SWAP_COVERAGE", "wide"), ("donor-pool-mb", "2048"),
++    ]
++
++    /// What it wrote, as key=value; empty when nothing was due. A write that fails is tried again at the
++    /// next start.
++    @discardableResult
++    static func seedDefaults(ramBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
++                             defaults: UserDefaults = .standard) -> [String] {
++        guard !defaults.bool(forKey: seededKey) else { return [] }
++        guard ramBytes < 10 << 30 else { defaults.set(true, forKey: seededKey); return [] }
++        var written: [String] = []
++        for item in memoryDefaults where MadeiraConfig.get(item.key) == nil {
++            guard MadeiraConfig.set(item.key, item.value) else { return written }
++            written.append("\(item.key)=\(item.value)")
++        }
++        defaults.set(true, forKey: seededKey)
++        return written
++    }
++}
+diff --git a/tools/build/package-ipa.sh b/tools/build/package-ipa.sh
+index 65b000c..f4e2f1f 100755
+--- a/tools/build/package-ipa.sh
++++ b/tools/build/package-ipa.sh
+@@ -28,6 +28,13 @@ python3 "$ROOT/tools/build/runtime-components.py" verify all
+ rm -rf "$DERIVED" "$DIST/Payload"
+ mkdir -p "$DIST"
+ 
++# SR2 Launcher: MADEIRA_BUNDLE_IDENTIFIER replaces the project's com.willfaust.madeora for the app and
++# its two extensions (they append .JITHelper and .MemoryHost); unset, the project's value stays.
++bundle_id_args=()
++if [[ -n "${MADEIRA_BUNDLE_IDENTIFIER:-}" ]]; then
++  bundle_id_args=("MADEIRA_BUNDLE_IDENTIFIER=$MADEIRA_BUNDLE_IDENTIFIER")
++fi
++
+ xcodebuild \
+   -project "$ROOT/app/Madeira.xcodeproj" \
+   -scheme Madeira \
+@@ -39,12 +46,18 @@ xcodebuild \
+   CODE_SIGNING_ALLOWED=NO \
+   CODE_SIGNING_REQUIRED=NO \
+   CODE_SIGN_IDENTITY='' \
++  ${bundle_id_args[@]+"${bundle_id_args[@]}"} \
+   build
+ 
+ [[ -d "$APP" ]] || { echo "ERROR: xcodebuild succeeded but Madeira.app is missing" >&2; exit 1; }
+ 
+ python3 "$ROOT/tools/build/runtime-components.py" bundle "$APP"
+ 
++# SR2 Launcher: which build this is, in Info.plist before the signature seals it. BuildStamp shows it
++# in the [build] log line and the Get Help file.
++plutil -replace MadeiraBuild -string \
++  "${MADEIRA_BUILD_STAMP:-0.2.0 · SR2 Launcher 1 · $(date -u '+%m-%d %H:%M') UTC}" "$APP/Info.plist"
++
+ # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
+ # replace this ad-hoc signature with the user's development signature while
+ # retaining the supported entitlements.
