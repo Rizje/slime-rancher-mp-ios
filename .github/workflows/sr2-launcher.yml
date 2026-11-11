@@ -15,7 +15,7 @@ name: SR2 Launcher IPA
 on:
   push:
     branches: [main, 'claude/**']
-    paths: ['launcher/**', '.github/workflows/sr2-launcher.yml']
+    paths: ['launcher/**', '!launcher/melonloader/**', '.github/workflows/sr2-launcher.yml']
   workflow_dispatch:
     inputs:
       stock:
