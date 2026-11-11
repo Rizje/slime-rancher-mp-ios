@@ -44,6 +44,25 @@ echo "== 1. patch 0001's helper"
 sh "$here/tests/run.sh" | tail -1
 sh "$here/tests/run.sh" "$work/patched/build/ntdll-unix/signal_arm64_ios.c" | tail -1
 
+echo "== 1b. no pipe2 on iOS (patch 0005)"
+# Wine's config.h is written on the build Mac; a macOS 27 runner sets HAVE_PIPE2, and iOS 26 has no
+# pipe2. No pipe2 call in Madeira's ntdll may be compiled for iOS (WINE_IOS).
+python3 - "$work/patched" <<'PY'
+import sys
+from pathlib import Path
+for name in ('server_ios.c', 'process_ios.c', 'thread_ios.c', 'signal_arm64_ios.c', 'virtual_ios.c', 'loader_ios.c'):
+    stack = []   # per open #if: 'ios' (built for iOS), 'not-ios' (never built for iOS) or 'other'
+    for n, line in enumerate((Path(sys.argv[1]) / 'build/ntdll-unix' / name).read_text().splitlines(), 1):
+        d = line.strip()
+        if d.startswith('#ifdef WINE_IOS'): stack.append('ios')
+        elif d.startswith('#ifndef WINE_IOS') or (d.startswith('#if') and '!defined(WINE_IOS)' in d): stack.append('not-ios')
+        elif d.startswith('#if'): stack.append('other')
+        elif d.startswith('#else') and stack: stack[-1] = {'ios': 'not-ios', 'not-ios': 'ios'}.get(stack[-1], 'other')
+        elif d.startswith('#endif') and stack: stack.pop()
+        elif 'pipe2(' in line and not line.lstrip().startswith(('*', '/*', '//')):
+            assert 'not-ios' in stack, '%s:%d calls pipe2 in code built for iOS' % (name, n)
+print('PASS: no pipe2 call is built for iOS')
+PY
 echo "== 2. the settings are keys and values Madeira reads"
 python3 - "$work/patched" <<'PY'
 import re, sys

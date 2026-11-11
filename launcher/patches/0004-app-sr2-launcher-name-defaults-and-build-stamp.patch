@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 12:00:00 +0000
-Subject: [PATCH 4/4] app: SR2 Launcher name, memory defaults and build stamp
+Subject: [PATCH 4/5] app: SR2 Launcher name, memory defaults and build stamp
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

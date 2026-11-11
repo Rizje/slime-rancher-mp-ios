@@ -40,6 +40,14 @@ if signed != expected:
 assert signed.get('com.apple.security.cs.allow-jit') is True
 PY
 
+# Every system function the app links weakly must exist on iOS 26: one the phone lacks resolves to
+# 0 and crashes on its first call. Build 5 had pipe2 (Wine's configure ran on a macOS 27 runner) and
+# closed the app as Wine made its first pipe. These five are in iOS 17.4 and later.
+allowed_weak='^_(os_sync_wait_on_address|os_sync_wait_on_address_with_timeout|os_sync_wake_by_address_all|os_sync_wake_by_address_any|_availability_version_check)$'
+weak_system() { nm -m -u "$1" 2>/dev/null | awk '/weak external/ && /\(from libSystem\)/ {print $4}'; }
+unknown_weak="$(weak_system "$app/Madeira" | grep -v -E "$allowed_weak" | tr '\n' ' ' || true)"
+unknown_weak="${unknown_weak% }"
+
 # Strings the patches put in the code; grep -r finds them in whichever binary links them.
 markers=("usd-probe-skips=" "[exc-census] sr2" "MADEIRA_USD_PROBE" "(SR2 Launcher's list)" "sr2launcher.applied"
          "sr2launcher.seeded.1" "SR2 Launcher is a modified version of Madeira 0.2.0")
@@ -49,6 +57,7 @@ if [[ "$variant" == launcher ]]; then
   # One executable, as in Madeira's 0.2.0 release: the code is not in a debug dylib behind a stub.
   [[ ! -e "$app/Madeira.debug.dylib" && ! -e "$app/__preview.dylib" ]] || fail "the app has Xcode's debug dylib layout"
   grep -a -q -F -- "[exc-census] sr2" "$app/Madeira" || fail "the patched code is not in the Madeira executable"
+  [[ -z "$unknown_weak" ]] || fail "weakly linked system functions iOS 26 may lack: $unknown_weak"
   [[ "$name" == "SR2 Launcher" ]] || fail "display name '$name', expected SR2 Launcher"
   [[ "$stamp" == "0.2.0 · SR2 Launcher 1 · "* ]] || fail "build stamp '$stamp'"
   for m in "${markers[@]}"; do found "$m" || fail "'$m' is not in the app: a patch is missing from the build"; done
@@ -59,5 +68,6 @@ else
 fi
 summary="$bundle with $extensions extension(s), named '$name'"
 [[ -z "$stamp" ]] || summary+=", stamp '$stamp'"
-if [[ "$variant" == launcher ]]; then summary+=", all ${#markers[@]} patch markers"; else summary+=", no patch markers"; fi
+if [[ "$variant" == launcher ]]; then summary+=", all ${#markers[@]} patch markers, no unknown weak system imports"
+else summary+=", no patch markers${unknown_weak:+, weak system imports: $unknown_weak}"; fi
 echo "verify-ipa: $variant $(basename "$ipa"): $summary, entitlements as Madeira.entitlements"

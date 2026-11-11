@@ -24,7 +24,7 @@ published on the [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releas
 | Phase | What | State |
 |---|---|---|
 | 1 | Test on one phone: does the plain game run well enough? | Runs: 28–30 FPS, 14–20 once throttled ([test steps](docs/phase-1-on-device-test.md)) |
-| 1b | [SR2 Launcher](launcher/README.md): the fix and the settings built in | Builds 3 to 5 close the app as the game starts (see launcher/README.md, "Known problem"); next: iOS crash report |
+| 1b | [SR2 Launcher](launcher/README.md): the fix and the settings built in | Build 6 removes the start-up crash of builds 3 to 5 (launcher/README.md); next: one run on the phone |
 | 2 | Add MelonLoader and Ranching Together on one phone | After phase 1 passes |
 | 3 | Two phones, same Wi-Fi, one hosts and one joins | After phase 2 passes |
 | 4 | Polish: touch layout, settings preset, setup guide, fixes sent to Madeira | Later |

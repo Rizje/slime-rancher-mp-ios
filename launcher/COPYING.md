@@ -5,7 +5,7 @@ licensed under the GNU General Public License, version 3 or later. Madeira's ter
 `LICENSE` (also `COPYING`), `LICENSE-EXCEPTION.md`, `LICENSES/` and `THIRD-PARTY-NOTICES.md`, and the
 app shows its licence notices itself.
 
-The modifications, the four patches in [`patches/`](patches), are released under the same terms,
+The modifications, the patches in [`patches/`](patches), are released under the same terms,
 GPL-3.0-or-later. So are the other files in this folder and
 [`.github/workflows/sr2-launcher.yml`](../.github/workflows/sr2-launcher.yml).
 

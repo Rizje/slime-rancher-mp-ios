@@ -1,11 +1,12 @@
 # SR2 Launcher
 
-Madeira 0.2.0 built for Slime Rancher 2. It is Madeira's own app with four patches:
+Madeira 0.2.0 built for Slime Rancher 2. It is Madeira's own app with five patches:
 
 1. a fix for the slowdown measured in this phone's logs,
 2. a counter that shows whether the fix worked,
 3. Slime Rancher 2's settings built in, so nothing has to be set by hand,
-4. its own name and build stamp, and the memory settings the game needs.
+4. its own name and build stamp, and the memory settings the game needs,
+5. a fix that lets an IPA built by GitHub's macOS 27 runners start a game on iOS 26.
 
 Built by GitHub Actions ([workflow](../.github/workflows/sr2-launcher.yml)) and published on this
 repository's [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releases) page as
@@ -69,7 +70,8 @@ that already has them (this one does) is left alone, and so is `eco = 1` and eve
 | [0001](patches/0001-ntdll-no-region-query-for-shared-data-reads.patch) | Reads of Windows' shared clock page (`KUSER_SHARED_DATA`) no longer ask the kernel about the memory behind them. That query walked iOS's whole memory map, 100–130 times a second, on the single thread that serves every game thread's faults: 47 % of a core on average and over 90 % late in a run, with the game waiting on it | `env.MADEIRA_USD_PROBE = 1` |
 | [0002](patches/0002-ntdll-exception-thread-census.patch) | One `[exc-census]` log line every 5 s: how busy that thread is | `env.MADEIRA_EXC_CENSUS = 0` |
 | [0003](patches/0003-app-slime-rancher-2-settings-built-in.patch) | The settings above, recognised by the game's Steam App ID, folder or program | Edit them, or delete the config lines |
-| [0004](patches/0004-app-sr2-launcher-name-defaults-and-build-stamp.patch) | The name, the memory defaults, the build stamp in the log and Get Help, a line in Setup Guide › About; the app built as one executable, as Madeira's own 0.2.0 release is (below) | — |
+| [0004](patches/0004-app-sr2-launcher-name-defaults-and-build-stamp.patch) | The name, the memory defaults, the build stamp in the log and Get Help, a line in Setup Guide › About; the app built as one executable, as Madeira's own 0.2.0 release is | — |
+| [0005](patches/0005-ntdll-no-pipe2-on-ios.patch) | Wine makes its server pipes with `pipe()` on iOS, never `pipe2()` (below) | — |
 
 The `env.` switches go in the game's config like any other line. Why 0001 is safe: the window onto
 that page is set up once, onto memory Madeira keeps mapped for the whole session, so a read that
@@ -97,23 +99,26 @@ What it cannot promise: the fix removes the largest cost measured once iOS throt
 and the game's own threads need less than one core there, so 30 FPS is within reach, but only the
 phone can show it. If something else is left, `[exc-census]` and `[xp-t]` name it.
 
-## Known problem: builds 3 to 5 close the app as the game starts
+## Builds 3 to 5 closed the app as the game started; build 6 removes the cause
 
-On the iPhone 16 Pro Max, builds 3 and 5 close the whole app as Wine connects to its server,
-before the game, Madeira's fault handler or any of the launcher's own code runs. The log ends:
+Builds 3 to 5 closed the whole app as Wine connected to its server, before the game ran. The log
+ended with `wineserver crashed`, and iOS's crash report for build 5 showed where:
 
 ```
-[Wine init_process] got request_fd=46, version=930 (expected 930)
-wineserver crashed, please enable coredumps (ulimit -c unlimited) and restart.
+EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS at 0x0
+do_sigsegv  <-  server_pipe+44  <-  init_thread_pipe+68  <-  server_init_process+1212  <-  __wine_main
 ```
 
-That line is the wineserver's handler for a crash in any thread of the app. Up to it, the log
-matches Madeira's own 0.2.0 build line for line, so the difference is in how these IPAs are built,
-not in the launcher's changes. Build 3 had the app's code in Xcode's `Madeira.debug.dylib`; build 5
-is built like Madeira's release, with it in the `Madeira` executable (`ENABLE_DEBUG_DYLIB=NO`), and
-still closes at the same point, so that was not the cause. The next step is iOS's crash report
-for build 5, which names the thread and the code that crashed. Until this is fixed, play with
-Madeira's own 0.2.0 IPA.
+`server_pipe+44` is the return from its call to `pipe2()`. Wine's build configuration (`config.h`)
+is written by Wine's `configure` on the build Mac. GitHub's `xcode-27` runner runs macOS 27, which
+has `pipe2`, so the configuration said the system has it. iOS 26 does not, and the call, linked
+weakly, jumped to address 0 the first time Wine made a pipe. Madeira's own 0.2.0 IPA was configured
+on a Mac without `pipe2`, so it never calls it.
+
+Patch 0005 makes `server_pipe` use `pipe()` on iOS, as that build does. `check.sh` fails if any
+`pipe2` call is built for iOS, and the workflow refuses an IPA that links weakly to any system
+function outside a short list known to be on iOS 26 (in build 5, `pipe2` was the only one). The earlier
+guesses, the two diagnostics switches and Xcode's debug dylib, were not the cause.
 
 ## If it crashes
 

@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH 5/5] ntdll: no pipe2 on iOS
+
+Wine's ntdll Unix side is compiled for iOS with the config.h that Wine's
+configure writes for the build Mac (wine/build-macos). On GitHub's
+xcode-27 runner, macOS 27, configure finds pipe2 and sets HAVE_PIPE2.
+iOS 26 has no pipe2, so the call is weakly linked and resolves to 0:
+every build from that runner closed the app the moment Wine made its
+first pipe. iOS crash report (iPhone 16 Pro Max, iOS 26.2.1):
+
+  EXC_BAD_ACCESS KERN_INVALID_ADDRESS at 0x0
+  do_sigsegv <- _sigtramp <- server_pipe+44 <- init_thread_pipe+68
+    <- server_init_process+1212 <- __wine_main <- wine_process_thread
+
+server_pipe+44 returns from "bl pipe2" (O_CLOEXEC in w1), and pipe2 is
+the binary's only weak libSystem import an iOS 26 phone lacks.
+
+On iOS, server_pipe now makes its pipes with pipe() and FD_CLOEXEC, as a
+build configured without pipe2 does. The two pipe2 calls in process_ios.c
+are inside its "No fork/exec on iOS" #else branches and never built.
+---
+ build/ntdll-unix/server_ios.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/build/ntdll-unix/server_ios.c b/build/ntdll-unix/server_ios.c
+index dc30fc6..e029aec 100644
+--- a/build/ntdll-unix/server_ios.c
++++ b/build/ntdll-unix/server_ios.c
+@@ -5260,7 +5260,12 @@ NTSTATUS unixcall_wine_server_handle_to_fd( void *args )
+ int server_pipe( int fd[2] )
+ {
+     int ret;
+-#ifdef HAVE_PIPE2
++    /* sr2-launcher: config.h comes from Wine's configure on the build Mac, and a macOS 27 host has
++     * pipe2, so HAVE_PIPE2 is set there. iOS 26 has no pipe2: the call is weakly linked and jumps to
++     * address 0 on the first pipe (EXC_BAD_ACCESS at 0 in server_pipe, then the wineserver's
++     * "wineserver crashed" handler; iPhone 16 Pro Max, iOS 26.2.1). pipe() and FD_CLOEXEC below are
++     * what a build configured without pipe2 does. */
++#if defined(HAVE_PIPE2) && !defined(WINE_IOS)
+     static BOOL have_pipe2 = TRUE;
+ 
+     if (have_pipe2)
