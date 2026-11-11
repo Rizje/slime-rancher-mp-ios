@@ -97,16 +97,23 @@ What it cannot promise: the fix removes the largest cost measured once iOS throt
 and the game's own threads need less than one core there, so 30 FPS is within reach, but only the
 phone can show it. If something else is left, `[exc-census]` and `[xp-t]` name it.
 
-## Build 3 crashed at start; build 5 is built differently
+## Known problem: builds 3 to 5 close the app as the game starts
 
-Build 3 closed the app as Wine connected to its server, before the game or any of the
-launcher's own code ran (the log ends with `wineserver crashed`, the wineserver's handler for a
-crash anywhere in the app). The only difference from Madeira's working 0.2.0 build up to that
-point was how the app was built: Xcode's Debug default puts the app's code in a
-`Madeira.debug.dylib` behind a small stub (`ml989: running image …/Madeira.debug.dylib`), while
-Madeira's release has it in the `Madeira` executable itself (`ml989: running image …/Madeira`).
-Build 4 was built the same way as build 3. From build 5 the launcher is built like the release
-(`ENABLE_DEBUG_DYLIB=NO`), and the workflow refuses an IPA that has the debug dylib.
+On the iPhone 16 Pro Max, builds 3 and 5 close the whole app as Wine connects to its server,
+before the game, Madeira's fault handler or any of the launcher's own code runs. The log ends:
+
+```
+[Wine init_process] got request_fd=46, version=930 (expected 930)
+wineserver crashed, please enable coredumps (ulimit -c unlimited) and restart.
+```
+
+That line is the wineserver's handler for a crash in any thread of the app. Up to it, the log
+matches Madeira's own 0.2.0 build line for line, so the difference is in how these IPAs are built,
+not in the launcher's changes. Build 3 had the app's code in Xcode's `Madeira.debug.dylib`; build 5
+is built like Madeira's release, with it in the `Madeira` executable (`ENABLE_DEBUG_DYLIB=NO`), and
+still closes at the same point, so that was not the cause. The next step is iOS's crash report
+for build 5, which names the thread and the code that crashed. Until this is fixed, play with
+Madeira's own 0.2.0 IPA.
 
 ## If it crashes
 
