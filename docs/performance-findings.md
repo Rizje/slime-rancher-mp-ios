@@ -73,15 +73,15 @@ anything wrong.
 The other slow region queries in Madeira's fault and memory code (about 70 call sites audited) are
 not on a per-fault path: start-up, censuses, the pool warmer, image loading, process exit, a
 fallback after five refused allocations, diagnostics and 32-bit I/O. The pool warmer's sweep runs
-every 10 s; `MADEIRA_LEAN_DIAG = 1` makes it once a minute.
+every 10 s. `MADEIRA_LEAN_DIAG = 1` would make it once a minute, but it also turns off the thread
+sampler's stuck-store check (a repair, not a diagnostic), so the launcher leaves it alone.
 
 ## SR2 Launcher
 
 [SR2 Launcher](../launcher/README.md) is Madeira 0.2.0 with four patches, built by GitHub Actions on
 Madeira's own CI image: reads of that page skip the query (switch: `env.MADEIRA_USD_PROBE = 1`
 restores it), an `[exc-census]` line every 5 s shows the exception thread's load, and the game's
-tested settings are built in, with `MADEIRA_PROBES = light` and `MADEIRA_LEAN_DIAG = 1` to stop
-diagnostics that pause or sweep while the game runs. It installs over Madeira and keeps the game.
+tested settings are built in. It installs over Madeira and keeps the game.
 
 It removes the largest measured cost in the throttled state. Whether that is enough for 30 FPS there
 can only be measured on the phone; the launcher's README lists what the log should show.

@@ -40,12 +40,16 @@ The game's config (**Game details › This game's config**):
 | `donor-pool-guard = 1` | The world loads with it (tested on this phone) |
 | `env.FEX_VECTORTSOENABLED = 0` | The tested config; already FEX's default here, as 8 of Madeira's lists have it |
 | `env.MADEIRA_FPS_GOV_MW = 2000`, `_MAX = 30`, `_MIN = 20` | FPS governor: holds the CPU near 2 W so iOS throttles later (tested: "better") |
-| `env.MADEIRA_PROBES = light` | Diagnostics only: stops the profilers that pause the game's threads; the counters stay |
-| `env.MADEIRA_LEAN_DIAG = 1` | Diagnostics only: the pool warmer's memory sweep and checks run once a minute, not every 2–10 s (as in Madeira's Horizon Forbidden West lists) |
 
-The tested config also had `env.FEX_MEMCPYSETTSOENABLED = 0`. It is left out: FEX's log shows
-`memcpyset=false` without it, so it is already the default, and Madeira's own checks forbid it in a
-list.
+That is the config of the tested runs, line for line, except `env.FEX_MEMCPYSETTSOENABLED = 0`: FEX's
+log shows `memcpyset=false` without it, so it is already the default, and Madeira's own checks forbid
+it in a list.
+
+Build 3 (list version 1) also set `env.MADEIRA_PROBES = light` and `env.MADEIRA_LEAN_DIAG = 1`, as
+diagnostics-only switches. They are not: the first never starts Madeira's thread sampler, and the
+second skips its stuck-store check, which completes a store stuck across a 16 KB page. The tested
+runs had that check. From build 4 the list is version 2 without them; the launcher writes it once
+more over version 1.
 
 The game's switches: **Resolution** 960×540, **MetalFX upscaling** 2×, **Display** Fit,
 **FPS limit** 30, **Launch arguments** empty. This is the display setup of the tested runs. Known
@@ -80,8 +84,8 @@ Play about five minutes in the world, then send the Get Help files. In the log:
 | Line | Expected |
 |---|---|
 | `[build]` | `0.2.0 · SR2 Launcher 1 · …` |
-| `[recommended] Slime Rancher 2:` | `slime-rancher-2 v1 written (reset)`, after the config it replaced |
-| `[probes] MADEIRA_PROBES=light` and `[lean-diag]` | present |
+| `[recommended] Slime Rancher 2:` | `slime-rancher-2 v2 written (reset)`, after the config it replaced |
+| `[probes]` and `[lean-diag]` | absent (the thread sampler and its stuck-store check run, as in the tested runs) |
 | `[subfloor] sr2 KUSER_SHARED_DATA reads skip the backing probe` | present |
 | `[subfloor] ml956 serviced … usd-probe-skips=N` | N rising |
 | `[exc-census] sr2 …` | `% of a core` a few percent (it was 47–96 %) |
@@ -91,6 +95,17 @@ Play about five minutes in the world, then send the Get Help files. In the log:
 What it cannot promise: the fix removes the largest cost measured once iOS throttles the processor,
 and the game's own threads need less than one core there, so 30 FPS is within reach, but only the
 phone can show it. If something else is left, `[exc-census]` and `[xp-t]` name it.
+
+## If it crashes
+
+Send these, so the cause can be read rather than guessed:
+
+1. Open SR2 Launcher again and use **Get Help**: it collects the log of the last game session, the
+   game's config and `madeira.cfg`.
+2. iOS's own crash report: **Settings › Privacy & Security › Analytics & Improvements › Analytics
+   Data**, the newest entry starting with `Madeira` (share it from the top-right button).
+
+Until then, Madeira's own 0.2.0 IPA (below) plays as before.
 
 ## Undo
 

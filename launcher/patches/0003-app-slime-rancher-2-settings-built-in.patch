@@ -5,11 +5,12 @@ Subject: [PATCH 3/4] app: Slime Rancher 2 settings built in
 
 GameRecommendations.slimeRancher2, recognised by Steam App ID 1657630, the
 "Slime Rancher 2" Steam folder or SlimeRancher2.exe: the config the game ran
-with on an iPhone 16 Pro Max (2026-11-09 and 11-10), plus two diagnostics-only
-lines: MADEIRA_PROBES = light (no thread-suspending samplers) and
-MADEIRA_LEAN_DIAG = 1 (the pool warmer's region sweep and zone check once a
-minute); 960x540 with MetalFX 2x, fit, a 30 FPS limit and no launch arguments
-(which removes -force-d3d12).
+with on an iPhone 16 Pro Max (2026-11-09 and 11-10), less FEX's own default
+memcpyset=0; 960x540 with MetalFX 2x, fit, a 30 FPS limit and no launch
+arguments (which removes -force-d3d12). Version 2: version 1 also had
+MADEIRA_PROBES = light and MADEIRA_LEAN_DIAG = 1, which are not diagnostics
+only: the first never starts the thread sampler and the second skips its
+stuck-store check (ml1288), which the tested runs had.
 
 GameRecommendation gains two optional fields, arguments and metalFXUpscale,
 which Reset to Recommended and first sight copy to the library entry.
@@ -25,13 +26,13 @@ The fixture also takes upstream's fix df04bf0 (#564) for its Garry's Mod
 case, which expected hl2.exe to be recognised and failed on v0.2.0 itself,
 and counts 52 Steam titles and 78 lists.
 ---
- app/Madeira/GameRecommendations.swift      | 38 ++++++++++++++++++++
- app/Madeira/GameRecommendationsApply.swift | 25 +++++++++++++
- tests/host/check-game-recommendations.py   | 42 +++++++++++++++++++---
- 3 files changed, 100 insertions(+), 5 deletions(-)
+ app/Madeira/GameRecommendations.swift      | 36 +++++++++++++++++
+ app/Madeira/GameRecommendationsApply.swift | 25 ++++++++++++
+ tests/host/check-game-recommendations.py   | 46 +++++++++++++++++++---
+ 3 files changed, 101 insertions(+), 6 deletions(-)
 
 diff --git a/app/Madeira/GameRecommendations.swift b/app/Madeira/GameRecommendations.swift
-index 1dacbf7..c3016c5 100644
+index 1dacbf7..fd49ea2 100644
 --- a/app/Madeira/GameRecommendations.swift
 +++ b/app/Madeira/GameRecommendations.swift
 @@ -84,6 +84,10 @@ struct GameRecommendation: Equatable {
@@ -63,26 +64,26 @@ index 1dacbf7..c3016c5 100644
          SteamTitle(appIDs: [2537590], folders: ["msfs2024"],
                     programs: ["flightsimulator2024.exe"], steamPrograms: [], list: msfs2024),
          SteamTitle(appIDs: [730], folders: ["counter-strike global offensive"],
-@@ -1533,6 +1541,36 @@ extension GameRecommendations {
+@@ -1533,6 +1541,34 @@ extension GameRecommendations {
          """,
          avx: false, nvidia: false, wineVCRT: false, display: "fit")
  
 +    /// Slime Rancher 2 (Steam App ID 1657630): the game SR2 Launcher is built for. Device-tested on an
-+    /// iPhone 16 Pro Max (A18 Pro, 8 GB), 2026-11-09 and 11-10, on Madeira 0.2.0. All but the last
-+    /// two lines are the config those runs used, less their FEX_MEMCPYSETTSOENABLED = 0 (FEX logged
-+    /// memcpyset=false without it: its default). donor-pool-guard with the 2 GB donor pool and 4 GB swap
-+    /// tier (SR2Launcher.seedDefaults) lets the world load inside the 6 GB an app gets; the FPS
-+    /// governor holds the CPU near 2 W so the thermal clamp comes later. The last two lines are
-+    /// diagnostics only: MADEIRA_PROBES = light leaves the counters ([xp], [xp-t]) and stops the
-+    /// samplers that suspend the game's threads; MADEIRA_LEAN_DIAG = 1 (as in Horizon Forbidden West's
-+    /// tested lists) runs the pool warmer's region sweep and zone check once a minute, not every 2-10 s.
++    /// iPhone 16 Pro Max (A18 Pro, 8 GB), 2026-11-09 and 11-10, on Madeira 0.2.0. The config those runs
++    /// used, less their FEX_MEMCPYSETTSOENABLED = 0 (FEX logged memcpyset=false without it: its
++    /// default). donor-pool-guard with the 2 GB donor pool and 4 GB swap tier (SR2Launcher.seedDefaults)
++    /// lets the world load inside the 6 GB an app gets; the FPS governor holds the CPU near 2 W so the
++    /// thermal clamp comes later. Version 2 drops version 1's MADEIRA_PROBES = light and
++    /// MADEIRA_LEAN_DIAG = 1: they are not diagnostics only. The first never starts the thread sampler
++    /// and the second skips its ios_stuck_store_check, and that check completes a store stuck across a
++    /// 16 KB page (ml1288), which the tested runs had.
 +    /// 960x540 with MetalFX 2x and a 30 FPS limit is the display setup of those runs; the game's
 +    /// Options page stays white at that size (1280x720 shows it). No launch arguments: with
 +    /// -force-d3d12 and a D3D11On12 bridge the game ran on madeira-d3d12 at 9-15 FPS against
 +    /// 28-30 on DXMT.
 +    static let slimeRancher2AppID = 1657630
 +    static let slimeRancher2 = GameRecommendation(
-+        id: "slime-rancher-2", title: "Slime Rancher 2", version: 1,
++        id: "slime-rancher-2", title: "Slime Rancher 2", version: 2,
 +        config: """
 +        # Madeira's recommended settings for Slime Rancher 2 (SR2 Launcher's list).
 +        # Reset to Recommended, at the bottom of the game's settings, brings them back.
@@ -92,8 +93,6 @@ index 1dacbf7..c3016c5 100644
 +        env.MADEIRA_FPS_GOV_MW = 2000
 +        env.MADEIRA_FPS_GOV_MAX = 30
 +        env.MADEIRA_FPS_GOV_MIN = 20
-+        env.MADEIRA_PROBES = light
-+        env.MADEIRA_LEAN_DIAG = 1
 +        """,
 +        fpsMode: 3, resolution: "960x540", display: "fit", arguments: "", metalFXUpscale: 2)
 +
@@ -151,7 +150,7 @@ index 82572a3..9338486 100644
          if let on = rec.startServices { entry.startServices = on ? true : nil }
      }
 diff --git a/tests/host/check-game-recommendations.py b/tests/host/check-game-recommendations.py
-index a6a8b63..dbb0542 100644
+index a6a8b63..95b5025 100644
 --- a/tests/host/check-game-recommendations.py
 +++ b/tests/host/check-game-recommendations.py
 @@ -74,7 +74,8 @@ MERGED = {'msfs-2024', 'counter-strike-2', 'breakneck', 'spelunky-2', 'albion-on
@@ -174,7 +173,18 @@ index a6a8b63..dbb0542 100644
          assert not set(FORK_DEFAULTS) & set(p['lines']), (ident, "the standard list has none of madeira-bcd's defaults")
          p['tested'], p['fork'] = p['lines'][2:], []
          continue
-@@ -640,6 +642,8 @@ struct LibraryEntry {
+@@ -457,7 +459,9 @@ assert presets['gta4-steam']['version'] == 3 and presets['gta4-steam']['switches
+ # variant or app-side switches, and no MADEIRA_SPAWN_SWAP (its engine code is not in this tree).
+ for ident in MERGED:
+     p = presets[ident]
+-    assert p['version'] == (2 if ident == 'batman-arkham-city-goty' else 1), ident
++    # Slime Rancher 2 (SR2 Launcher) 2: version 1's MADEIRA_PROBES and MADEIRA_LEAN_DIAG lines left the
++    # thread sampler's stuck-store check off; version 2 is the tested config again.
++    assert p['version'] == {'batman-arkham-city-goty': 2, 'slime-rancher-2': 2}.get(ident, 1), ident
+     assert not any(line.startswith(('env.MADEIRA_WINTYPES', 'env.MADEIRA_OPTIN_DLLS', 'env.MADEIRA_D3D8 ',
+                                     'env.MADEIRA_STEAM_IDENTITY', 'env.MADEIRA_MFC_DOCK', 'pool-split-retry'))
+                    for line in p['lines']), (ident, p['lines'])
+@@ -640,6 +644,8 @@ struct LibraryEntry {
      var semaphoreFastPath: Bool? = nil
      var launchMode: String? = nil
      var startServices: Bool? = nil
@@ -183,7 +193,7 @@ index a6a8b63..dbb0542 100644
  }
  
  final class PrefStore {
-@@ -800,9 +804,9 @@ check(id(steam + #"\Call of Duty Black Ops"#, 42710) == "none" && id(steam + #"\
+@@ -800,9 +806,9 @@ check(id(steam + #"\Call of Duty Black Ops"#, 42710) == "none" && id(steam + #"\
        "the first Black Ops' multiplayer shares the folder and has no list")
  check(id(steam + #"\The Escapists 2"#, 641990) == "the-escapists-2" && id(steam + #"\The Escapists 2\TheEscapists2.exe"#) == "the-escapists-2",
        "The Escapists 2 by App ID, folder and program")
@@ -196,7 +206,7 @@ index a6a8b63..dbb0542 100644
  check(id(#"C:\Games\Foo\foo.exe"#) == "none" && id(steam + #"\Portal 2"#, 620) == "none", "other games")
  check(id("") == "none" && id("C:\\") == "none", "no path")
  print("PASS: Steam games by App ID or steamapps\\common folder, GTA V Enhanced and RDR2 inside and outside Steam, GoT, GoW, the Horizon games, Rift Apart and the three Crysis Remastered games by their programs, GTA V Legacy outside Steam, the 51 merged Steam titles, others none")
-@@ -972,6 +976,34 @@ check(R.prepare(&gotOwn, new: true) && LibraryPrefs.avx(got) && LibraryPrefs.nvi
+@@ -972,6 +978,34 @@ check(R.prepare(&gotOwn, new: true) && LibraryPrefs.avx(got) && LibraryPrefs.nvi
  check(LogStore.shared.lines.contains { $0.hasPrefix("[recommended] Red Dead Redemption 2: rdr2-steam v\(R.rdr2Steam.version) written (first sight)") }, "log line")
  UserDefaults.standard.removeObject(forKey: key)
  print("PASS: drive_c is looked up for a program's list; a new entry takes the fields of a list written for its path before")
@@ -215,7 +225,7 @@ index a6a8b63..dbb0542 100644
 +      && slime.metalFXUpscale == 2 && slime.fpsMode == 3 && slime.resolution == "960x540" && slime.display == nil,
 +      "Slime Rancher 2 with a config of its own takes the whole list")
 +check(UserDefaults.standard.integer(forKey: sr2Key) == R.slimeRancher2.version, "the list's version is recorded")
-+check(LogStore.shared.lines.contains { $0.contains("slime-rancher-2 v1 replaces:") && $0.contains("FEX_MEMCPYSETTSOENABLED") && $0.contains("fence-chain = 1") }
++check(LogStore.shared.lines.contains { $0.contains("slime-rancher-2 v\(R.slimeRancher2.version) replaces:") && $0.contains("FEX_MEMCPYSETTSOENABLED") && $0.contains("fence-chain = 1") }
 +      && LogStore.shared.lines.contains { $0.hasSuffix("the launch arguments it replaces: -force-d3d12") }, "what it replaced is logged")
 +GameProfile(windowsPath: sr2).text = R.slimeRancher2.fileText + "env.MADEIRA_FPS_GOV_MAX = 40\n"
 +slime.arguments = "-screen-fullscreen 0"; slime.fpsMode = 1

@@ -59,15 +59,21 @@ config = (app / 'MadeiraConfig.swift').read_text()
 block = lists.split('static let slimeRancher2 = GameRecommendation(', 1)[1].split('""",', 1)[0]
 lines = [l.strip() for l in block.split('"""', 1)[1].splitlines() if l.strip() and not l.strip().startswith('#')]
 settings = dict(tuple(part.strip() for part in l.split('=', 1)) for l in lines)
-assert len(settings) == len(lines) == 8, lines
+assert len(settings) == len(lines) == 6, lines
 for key in settings:
     if key.startswith('env.FEX_'):   # FEX's own option: Madeira passes it through; its lists use it
         uses = len(re.findall(r'^\s*%s = ' % re.escape(key), lists, re.M))
         assert uses >= 2, (key, 'no other Madeira list uses it')
     else:
         assert 'key: "%s"' % key in catalog, (key, 'not in ConfigCatalog.generated.swift')
-assert settings['env.MADEIRA_PROBES'] == 'light' and '!strcmp(probes_env, "light")' in server
-assert settings['env.MADEIRA_LEAN_DIAG'] == '1' and 'getenv("MADEIRA_LEAN_DIAG")' in server
+# Not diagnostics only: MADEIRA_PROBES below 2 never starts the thread sampler, and MADEIRA_LEAN_DIAG skips its
+# ios_stuck_store_check, which completes a store stuck across a 16 KB page (ml1288). The tested runs had it.
+assert not any(k in settings for k in ('env.MADEIRA_PROBES', 'env.MADEIRA_LEAN_DIAG')), settings
+assert 'if (probes >= 2) dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ ios_thread_sampler_main(); });' in server
+assert 'if (stuck_check && !ios_lean_diag) ios_stuck_store_check();' in server
+tested = {'env.MADEIRA_EC_HOOK_TRACE': '0', 'donor-pool-guard': '1', 'env.FEX_VECTORTSOENABLED': '0',
+          'env.MADEIRA_FPS_GOV_MW': '2000', 'env.MADEIRA_FPS_GOV_MAX': '30', 'env.MADEIRA_FPS_GOV_MIN': '20'}
+assert settings == tested, settings   # the phone's [game-cfg] of 2026-11-10, less FEX's own default memcpyset=0
 for name in ('MW', 'MAX', 'MIN'):
     assert 'getenv( "MADEIRA_FPS_GOV_%s" )' % name in server, name
 assert int(settings['env.MADEIRA_FPS_GOV_MIN']) <= int(settings['env.MADEIRA_FPS_GOV_MAX']) == 30
@@ -84,7 +90,7 @@ for key in defaults:
 assert 'static let swapChoices = [0, 1024, 2048, 3072, 4096]' in library
 assert 'static let donorPoolChoices = [0, 2048, 4096, 6144]' in library
 assert '("wide", L("1 MB+ and overflow"))' in library
-print('PASS: %d list lines and 3 memory defaults are keys Madeira reads, with values it offers' % len(lines))
+print('PASS: the %d list lines are the tested config, and they and the 3 memory defaults are keys Madeira reads' % len(lines))
 PY
 
 echo "== 3. Madeira's host checks, stock against patched"
