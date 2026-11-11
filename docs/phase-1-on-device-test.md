@@ -39,6 +39,15 @@ anything fails.
 > Paid certificate services usually sign with distribution certificates, which can't be
 > debuggable. Madeira shows a signing error if this is wrong.
 
+### A2. SR2 Launcher (recommended, after Madeira works)
+
+[SR2 Launcher](../launcher/README.md) is Madeira 0.2.0 built for this game: a fix for the slowdown
+once the phone throttles, and every setting below built in. Download `SR2Launcher.ipa` from this
+repository's [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releases) page in Safari and
+open it in SideStore, keeping the app extensions. It replaces Madeira and keeps the game, saves,
+sign-in, JIT and Memory+. Its folder in the Files app is then called **SR2 Launcher** instead of
+**Madeira**, in the paths below too.
+
 ## B. Install Slime Rancher 2
 
 1. In Madeira's library, tap **Sign in to Steam** and sign in.
@@ -65,15 +74,22 @@ Steam's checksums and keeps every part that matches, so it only verifies instead
 
 ## C. Run the plain game (no mods)
 
-Open the game's details page and set:
+**With SR2 Launcher, skip this table:** it sets all of it, and the game's config, by itself. Turn on
+the performance overlay if you want to watch FPS.
+
+With plain Madeira, open the game's details page and set what the tested runs used:
 
 | Setting | Value | Why |
 |---|---|---|
-| Resolution | This screen's shape, the 480-line option | MetalFX 1.5× brings it to about 720p |
-| MetalFX upscaling | 1.5× | Big GPU saving |
+| Resolution | 960×540 | MetalFX 2× brings it to 1920×1080 on screen |
+| MetalFX upscaling | 2× | Big GPU saving |
 | FPS limit | 30 | Steadier, cooler, lower battery drain |
+| Launch arguments | empty | `-force-d3d12` is slower here (part C2) |
 | Pause threads fully | Automatic | Turns itself on for Unity games like this one; prevents a known crash |
 | Performance overlay | On | Shows FPS, memory and thermal state |
+
+The game's own Options menu shows white at 960×540; switch to 1280×720 for a session to change
+the game's options.
 
 Then press **Play** and check, in order:
 
@@ -175,6 +191,7 @@ Guest, school and hotel Wi-Fi often block devices from talking to each other. Us
 | FPS on the ranch | |
 | FPS in a busy area | |
 | (Part C2) FPS with the d3d11 bridge | 9–15 (Direct3D 11: 28–30); skip on Madeira 0.2.0 |
+| (A2) SR2 Launcher: FPS after 100 s, and the log lines in its README | |
 | Peak memory on the overlay | |
 | 20 minutes without a crash or kill | |
 | Touch controls usable | |
