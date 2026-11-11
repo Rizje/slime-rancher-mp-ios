@@ -16,14 +16,15 @@ Madeira can connect to each other over the same Wi-Fi.
 On an iPhone 16 Pro Max the game runs at 28–30 FPS until iOS throttles the processor, then 14–20.
 The logs traced the throttled slowdown to one kernel query on Madeira's fault thread
 ([performance findings](docs/performance-findings.md)). [SR2 Launcher](launcher/README.md) is
-Madeira 0.2.0 with that fixed and the game's settings built in, built by GitHub Actions.
+Madeira 0.2.0 with that fixed and the game's settings built in, built by GitHub Actions and
+published on the [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releases) page.
 
 ## Status
 
 | Phase | What | State |
 |---|---|---|
 | 1 | Test on one phone: does the plain game run well enough? | Runs: 28–30 FPS, 14–20 once throttled ([test steps](docs/phase-1-on-device-test.md)) |
-| 1b | [SR2 Launcher](launcher/README.md): the fix and the settings built in | Building in CI; next: one run on the phone |
+| 1b | [SR2 Launcher](launcher/README.md): the fix and the settings built in | Built: [build 3](https://github.com/Rizje/slime-rancher-mp-ios/releases/tag/sr2-launcher-3); next: one run on the phone |
 | 2 | Add MelonLoader and Ranching Together on one phone | After phase 1 passes |
 | 3 | Two phones, same Wi-Fi, one hosts and one joins | After phase 2 passes |
 | 4 | Polish: touch layout, settings preset, setup guide, fixes sent to Madeira | Later |
