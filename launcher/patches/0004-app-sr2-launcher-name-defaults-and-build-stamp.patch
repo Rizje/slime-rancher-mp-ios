@@ -14,17 +14,24 @@ Content-Transfer-Encoding: 8bit
   madeira.cfg has no value for it.
 - The Setup Guide's About names this as a modified version of Madeira 0.2.0
   and where its source is.
+- package-ipa.sh builds with ENABLE_DEBUG_DYLIB=NO and refuses a
+  Madeira.debug.dylib: the app's code goes in the Madeira executable, as in
+  Madeira's 0.2.0 release ("ml989: running image .../Madeira"). With Xcode's
+  Debug default (code in Madeira.debug.dylib behind a stub) build 3 died on
+  the phone as Wine connected to its server, before the launcher's own code
+  ran. runtime-components.py ipa accepts either layout.
 - package-ipa.sh: MADEIRA_BUNDLE_IDENTIFIER overrides the project's bundle
   identifier for the app and both extensions; Info.plist gets MadeiraBuild
   (MADEIRA_BUILD_STAMP, else "0.2.0 · SR2 Launcher 1 · <UTC time>"), which
   the [build] log line and Get Help show.
 ---
- app/Madeira/ContentView.swift   |  3 +++
- app/Madeira/Info.plist          |  2 +-
- app/Madeira/MadeiraApp.swift    |  3 +++
- app/Madeira/MadeiraConfig.swift | 29 +++++++++++++++++++++++++++++
- tools/build/package-ipa.sh      | 13 +++++++++++++
- 5 files changed, 49 insertions(+), 1 deletion(-)
+ app/Madeira/ContentView.swift     |  3 +++
+ app/Madeira/Info.plist            |  2 +-
+ app/Madeira/MadeiraApp.swift      |  3 +++
+ app/Madeira/MadeiraConfig.swift   | 29 +++++++++++++++++++++++++++++
+ tools/build/package-ipa.sh        | 19 +++++++++++++++++++
+ tools/build/runtime-components.py |  8 ++++++--
+ 6 files changed, 61 insertions(+), 3 deletions(-)
 
 diff --git a/app/Madeira/ContentView.swift b/app/Madeira/ContentView.swift
 index 0c85315..18bb9f3 100644
@@ -105,7 +112,7 @@ index e7d9ef0..271ba0f 100644
 +    }
 +}
 diff --git a/tools/build/package-ipa.sh b/tools/build/package-ipa.sh
-index 65b000c..f4e2f1f 100755
+index 65b000c..f88429f 100755
 --- a/tools/build/package-ipa.sh
 +++ b/tools/build/package-ipa.sh
 @@ -28,6 +28,13 @@ python3 "$ROOT/tools/build/runtime-components.py" verify all
@@ -122,14 +129,20 @@ index 65b000c..f4e2f1f 100755
  xcodebuild \
    -project "$ROOT/app/Madeira.xcodeproj" \
    -scheme Madeira \
-@@ -39,12 +46,18 @@ xcodebuild \
+@@ -39,12 +46,24 @@ xcodebuild \
    CODE_SIGNING_ALLOWED=NO \
    CODE_SIGNING_REQUIRED=NO \
    CODE_SIGN_IDENTITY='' \
++  ENABLE_DEBUG_DYLIB=NO \
 +  ${bundle_id_args[@]+"${bundle_id_args[@]}"} \
    build
  
  [[ -d "$APP" ]] || { echo "ERROR: xcodebuild succeeded but Madeira.app is missing" >&2; exit 1; }
++# SR2 Launcher: the app's code in the Madeira executable itself, as in Madeira's 0.2.0 release (its log:
++# "ml989: running image .../Madeira"). Xcode's Debug default puts it in Madeira.debug.dylib behind a stub
++# executable instead; built that way, SR2 Launcher build 3 died as Wine connected to its server, on the
++# iPhone 16 Pro Max, before any of the launcher's own code ran.
++[[ ! -e "$APP/Madeira.debug.dylib" ]] || { echo "ERROR: Madeira.debug.dylib was built (ENABLE_DEBUG_DYLIB)" >&2; exit 1; }
  
  python3 "$ROOT/tools/build/runtime-components.py" bundle "$APP"
  
@@ -141,3 +154,22 @@ index 65b000c..f4e2f1f 100755
  # Preserve Madeira's requested JIT/debug entitlements in the IPA. SideStore will
  # replace this ad-hoc signature with the user's development signature while
  # retaining the supported entitlements.
+diff --git a/tools/build/runtime-components.py b/tools/build/runtime-components.py
+index 579d0cb..3ce6b36 100755
+--- a/tools/build/runtime-components.py
++++ b/tools/build/runtime-components.py
+@@ -269,8 +269,12 @@ def validate_ipa(ipa, sdk):
+             raise ValueError('IPA is missing runtime components')
+         for name in CONTRACT:
+             validate_manifest(name, manifest['components'][name], lambda p: archive.read(prefix + p), sdk)
+-        for path in ['Madeira', 'Madeira.debug.dylib', 'prefix-template.tar.gz',
+-                     'x86_64-vcruntime/vcruntime140.dll', 'i386-windows/ntdll.dll']:
++        # SR2 Launcher: the app's code is in Madeira itself (ENABLE_DEBUG_DYLIB=NO, as in Madeira's 0.2.0
++        # release); a build with Xcode's debug dylib has it in Madeira.debug.dylib, which must not be empty.
++        resources = ['Madeira', 'prefix-template.tar.gz', 'x86_64-vcruntime/vcruntime140.dll', 'i386-windows/ntdll.dll']
++        if prefix + 'Madeira.debug.dylib' in names:
++            resources.insert(1, 'Madeira.debug.dylib')
++        for path in resources:
+             if not archive.read(prefix + path):
+                 raise ValueError(f'empty app resource: {path}')
+         if archive.testzip():

@@ -6,7 +6,8 @@
 # ENTITLEMENTS is the tree's app/Madeira/Madeira.entitlements, which package-ipa.sh signs with.
 # Checks: the app and its extensions carry BUNDLE_ID (the extensions as BUNDLE_ID.<name>), version
 # 0.2.0, the signature's entitlements are exactly that file's, and the name, build stamp and
-# patched code are the launcher's (or, for stock, Madeira's own and none of the launcher's).
+# patched code are the launcher's (or, for stock, Madeira's own and none of the launcher's). The
+# launcher must have its code in the Madeira executable, without Xcode's debug dylib.
 set -euo pipefail
 ipa="$1" variant="$2" bundle="$3" entitlements="$4"
 fail() { echo "verify-ipa: $*" >&2; exit 1; }
@@ -45,6 +46,9 @@ markers=("usd-probe-skips=" "[exc-census] sr2" "MADEIRA_USD_PROBE" "(SR2 Launche
 found() { grep -r -a -q -F -- "$1" "$app"; }
 name="$(key "$app" CFBundleDisplayName)" stamp="$(key "$app" MadeiraBuild)"
 if [[ "$variant" == launcher ]]; then
+  # One executable, as in Madeira's 0.2.0 release: the code is not in a debug dylib behind a stub.
+  [[ ! -e "$app/Madeira.debug.dylib" && ! -e "$app/__preview.dylib" ]] || fail "the app has Xcode's debug dylib layout"
+  grep -a -q -F -- "[exc-census] sr2" "$app/Madeira" || fail "the patched code is not in the Madeira executable"
   [[ "$name" == "SR2 Launcher" ]] || fail "display name '$name', expected SR2 Launcher"
   [[ "$stamp" == "0.2.0 · SR2 Launcher 1 · "* ]] || fail "build stamp '$stamp'"
   for m in "${markers[@]}"; do found "$m" || fail "'$m' is not in the app: a patch is missing from the build"; done

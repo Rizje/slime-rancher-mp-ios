@@ -69,7 +69,7 @@ that already has them (this one does) is left alone, and so is `eco = 1` and eve
 | [0001](patches/0001-ntdll-no-region-query-for-shared-data-reads.patch) | Reads of Windows' shared clock page (`KUSER_SHARED_DATA`) no longer ask the kernel about the memory behind them. That query walked iOS's whole memory map, 100–130 times a second, on the single thread that serves every game thread's faults: 47 % of a core on average and over 90 % late in a run, with the game waiting on it | `env.MADEIRA_USD_PROBE = 1` |
 | [0002](patches/0002-ntdll-exception-thread-census.patch) | One `[exc-census]` log line every 5 s: how busy that thread is | `env.MADEIRA_EXC_CENSUS = 0` |
 | [0003](patches/0003-app-slime-rancher-2-settings-built-in.patch) | The settings above, recognised by the game's Steam App ID, folder or program | Edit them, or delete the config lines |
-| [0004](patches/0004-app-sr2-launcher-name-defaults-and-build-stamp.patch) | The name, the memory defaults, the build stamp in the log and Get Help, a line in Setup Guide › About | — |
+| [0004](patches/0004-app-sr2-launcher-name-defaults-and-build-stamp.patch) | The name, the memory defaults, the build stamp in the log and Get Help, a line in Setup Guide › About; the app built as one executable, as Madeira's own 0.2.0 release is (below) | — |
 
 The `env.` switches go in the game's config like any other line. Why 0001 is safe: the window onto
 that page is set up once, onto memory Madeira keeps mapped for the whole session, so a read that
@@ -84,6 +84,7 @@ Play about five minutes in the world, then send the Get Help files. In the log:
 | Line | Expected |
 |---|---|
 | `[build]` | `0.2.0 · SR2 Launcher 1 · …` |
+| `ml989: running image` | `…/App.app/Madeira` (not `Madeira.debug.dylib`) |
 | `[recommended] Slime Rancher 2:` | `slime-rancher-2 v2 written (reset)`, after the config it replaced |
 | `[probes]` and `[lean-diag]` | absent (the thread sampler and its stuck-store check run, as in the tested runs) |
 | `[subfloor] sr2 KUSER_SHARED_DATA reads skip the backing probe` | present |
@@ -95,6 +96,17 @@ Play about five minutes in the world, then send the Get Help files. In the log:
 What it cannot promise: the fix removes the largest cost measured once iOS throttles the processor,
 and the game's own threads need less than one core there, so 30 FPS is within reach, but only the
 phone can show it. If something else is left, `[exc-census]` and `[xp-t]` name it.
+
+## Build 3 crashed at start; build 5 is built differently
+
+Build 3 closed the app as Wine connected to its server, before the game or any of the
+launcher's own code ran (the log ends with `wineserver crashed`, the wineserver's handler for a
+crash anywhere in the app). The only difference from Madeira's working 0.2.0 build up to that
+point was how the app was built: Xcode's Debug default puts the app's code in a
+`Madeira.debug.dylib` behind a small stub (`ml989: running image …/Madeira.debug.dylib`), while
+Madeira's release has it in the `Madeira` executable itself (`ml989: running image …/Madeira`).
+Build 4 was built the same way as build 3. From build 5 the launcher is built like the release
+(`ENABLE_DEBUG_DYLIB=NO`), and the workflow refuses an IPA that has the debug dylib.
 
 ## If it crashes
 
