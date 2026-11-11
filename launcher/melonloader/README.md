@@ -7,7 +7,7 @@ downloads and published on [Releases](https://github.com/Rizje/slime-rancher-mp-
 
 | In the zip | From |
 |---|---|
-| `version.dll`, `dobby.dll`, `MelonLoader/` | [MelonLoader v0.7.3](https://github.com/LavaGang/MelonLoader/releases/tag/v0.7.3), `MelonLoader.x64.zip` (Apache-2.0) |
+| `version.dll`, `MelonLoader/` | [MelonLoader v0.7.3](https://github.com/LavaGang/MelonLoader/releases/tag/v0.7.3), `MelonLoader.x64.zip` (Apache-2.0) |
 | `dotnet/` | Microsoft's .NET 6.0.36 Runtime and Desktop Runtime for Windows x64, SHA-512 checked against Microsoft's release metadata (MIT) |
 
 0.7.3 is the version Ranching Together needs, so the multiplayer mod can go on top later. For
@@ -18,8 +18,8 @@ IL2CPP games like this one MelonLoader runs on .NET 6. On Windows it installs th
 
 1. In Safari, download `SR2-MelonLoader-0.7.3-pack.zip` from the newest
    **MelonLoader 0.7.3 pack** on the Releases page. In Files, tap it to unzip.
-2. Open the new folder **Slime Rancher 2 MelonLoader**. Select `version.dll`, `dobby.dll`,
-   `MelonLoader` and `dotnet`, tap **Move**, and move them into
+2. Open the new folder **Slime Rancher 2 MelonLoader**. Select `version.dll`, `MelonLoader` and
+   `dotnet`, tap **Move**, and move them into
    **SR2 Launcher › wine › drive_c › Program Files (x86) › Steam › steamapps › common ›
    Slime Rancher 2**, next to `SlimeRancher2.exe`.
 3. In SR2 Launcher: **Slime Rancher 2 › Game details › Advanced › This game's config**, add this

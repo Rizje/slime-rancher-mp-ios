@@ -1,14 +1,13 @@
 Slime Rancher 2: MelonLoader pack for SR2 Launcher
 ==================================================
 
-This folder holds MelonLoader @MELONLOADER@ (version.dll, dobby.dll and the MelonLoader
-folder) and Microsoft's .NET @DOTNET@ Desktop Runtime for Windows x64 (the dotnet folder),
+This folder holds MelonLoader @MELONLOADER@ (version.dll and the MelonLoader folder) and Microsoft's .NET @DOTNET@ Desktop Runtime for Windows x64 (the dotnet folder),
 which MelonLoader runs on. MelonLoader 0.7.3 reads a .NET runtime from <game>/dotnet, so
 nothing has to be installed inside Wine.
 
 Install (Files app on the iPhone):
 
-1. Move everything in this folder (version.dll, dobby.dll, MelonLoader, dotnet) into
+1. Move everything in this folder (version.dll, MelonLoader, dotnet) into
    SR2 Launcher > wine > drive_c > Program Files (x86) > Steam > steamapps > common >
    Slime Rancher 2, next to SlimeRancher2.exe. (This text file can stay behind.)
 2. In SR2 Launcher: Slime Rancher 2 > Game details > Advanced > This game's config,
