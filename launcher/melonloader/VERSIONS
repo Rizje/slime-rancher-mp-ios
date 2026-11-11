@@ -1,0 +1,3 @@
+# What the MelonLoader pack holds. Change a line here to build a new pack.
+MELONLOADER=0.7.3
+DOTNET=6.0.36

@@ -1,0 +1,99 @@
+# SR2 Launcher: a ready-to-copy MelonLoader folder for Slime Rancher 2 on the iPhone.
+#
+# Downloads MelonLoader (LavaGang/MelonLoader's release zip) and Microsoft's .NET Desktop Runtime
+# for Windows x64 (checked against the SHA-512 in Microsoft's release metadata), arranges them as
+# they go next to SlimeRancher2.exe (MelonLoader 0.7.3 reads a portable runtime from <game>/dotnet),
+# and publishes the zip as a prerelease. Versions: launcher/melonloader/VERSIONS.
+name: SR2 MelonLoader pack
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    paths: ['launcher/melonloader/**', '.github/workflows/sr2-melonloader-pack.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download and check
+        run: |
+          set -euo pipefail
+          MELONLOADER="$(sed -n 's/^MELONLOADER=\([0-9.]*\)$/\1/p' launcher/melonloader/VERSIONS)"
+          DOTNET="$(sed -n 's/^DOTNET=\([0-9.]*\)$/\1/p' launcher/melonloader/VERSIONS)"
+          [[ -n "$MELONLOADER" && -n "$DOTNET" ]] || { echo "::error::launcher/melonloader/VERSIONS"; exit 1; }
+          echo "MELONLOADER=$MELONLOADER" >> "$GITHUB_ENV"
+          echo "DOTNET=$DOTNET" >> "$GITHUB_ENV"
+          mkdir -p dl
+          curl -fsSL -o dl/MelonLoader.x64.zip \
+            "https://github.com/LavaGang/MelonLoader/releases/download/v$MELONLOADER/MelonLoader.x64.zip"
+          curl -fsSL -o dl/MelonLoader-LICENSE.md \
+            "https://raw.githubusercontent.com/LavaGang/MelonLoader/v$MELONLOADER/LICENSE.md"
+          major="${DOTNET%.*}"
+          for host in builds.dotnet.microsoft.com dotnetcli.blob.core.windows.net; do
+            if curl -fsSL -o dl/releases.json "https://$host/dotnet/release-metadata/$major/releases.json"; then break; fi
+          done
+          # The base runtime (Microsoft.NETCore.App, hostfxr) and the Desktop Runtime MelonLoader installs on Windows.
+          python3 - "$DOTNET" > dl/runtime.txt <<'PY'
+          import json, sys
+          version = sys.argv[1]
+          meta = json.load(open('dl/releases.json'))
+          release = next(r for r in meta['releases'] if r['release-version'] == version)
+          for part in ('runtime', 'windowsdesktop'):
+              f = next(f for f in release[part]['files'] if f['rid'] == 'win-x64' and f['name'].endswith('.zip'))
+              print(part, f['url'], f['hash'])
+          PY
+          urls=""
+          while read -r part url hash; do
+            curl -fsSL -o "dl/$part.zip" "$url"
+            echo "$hash  dl/$part.zip" | sha512sum -c -
+            urls="$urls $url"
+          done < dl/runtime.txt
+          echo "RUNTIME_URL=${urls# }" >> "$GITHUB_ENV"
+      - name: Assemble the folder
+        run: |
+          set -euo pipefail
+          pack="pack/Slime Rancher 2 MelonLoader"
+          mkdir -p "$pack/dotnet"
+          unzip -q dl/MelonLoader.x64.zip -d "$pack"
+          unzip -q dl/runtime.zip -d "$pack/dotnet"
+          unzip -q -o dl/windowsdesktop.zip -d "$pack/dotnet"
+          cp dl/MelonLoader-LICENSE.md "$pack/"
+          sed -e "s/@MELONLOADER@/$MELONLOADER/" -e "s/@DOTNET@/$DOTNET/" launcher/melonloader/PACK-README.txt \
+            > "$pack/READ ME FIRST.txt"
+          # What MelonLoader and the .NET host need, where they look for it.
+          for f in version.dll dobby.dll MelonLoader \
+                   "dotnet/host/fxr/$DOTNET/hostfxr.dll" \
+                   "dotnet/shared/Microsoft.NETCore.App/$DOTNET/coreclr.dll" \
+                   "dotnet/shared/Microsoft.WindowsDesktop.App/$DOTNET" \
+                   dotnet/LICENSE.txt dotnet/ThirdPartyNotices.txt; do
+            test -e "$pack/$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          ls -la "$pack"
+          (cd pack && zip -qr -X "../SR2-MelonLoader-$MELONLOADER-pack.zip" "Slime Rancher 2 MelonLoader")
+          ls -l "SR2-MelonLoader-$MELONLOADER-pack.zip"
+      - name: Publish the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: melonloader-pack-${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          file="SR2-MelonLoader-$MELONLOADER-pack.zip"
+          sha=$(sha256sum "$file" | cut -d' ' -f1)
+          cat > notes.md <<NOTES
+          MelonLoader $MELONLOADER and Microsoft's .NET $DOTNET Desktop Runtime (Windows x64), in one folder to copy next to \`SlimeRancher2.exe\` in SR2 Launcher. Steps are in \`READ ME FIRST.txt\` inside the zip and in [launcher/melonloader/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/launcher/melonloader/README.md).
+
+          Sources: [MelonLoader v$MELONLOADER](https://github.com/LavaGang/MelonLoader/releases/tag/v$MELONLOADER) (\`MelonLoader.x64.zip\`, Apache-2.0); .NET runtimes from Microsoft (${RUNTIME_URL}), SHA-512 checked against Microsoft's release metadata (MIT).
+
+          SHA-256 of the zip: \`$sha\`. Built by [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}).
+          NOTES
+          gh release create "$TAG" "$file" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "MelonLoader $MELONLOADER pack for Slime Rancher 2" --notes-file notes.md

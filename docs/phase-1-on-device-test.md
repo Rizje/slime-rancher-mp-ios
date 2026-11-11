@@ -144,27 +144,15 @@ Ranching Together needs three things, all versions matching exactly:
 **MelonLoader 0.7.3**, **Starlight 4.0.3** and **Ranching Together**. It also requires Slime
 Rancher 2 version **1.3.0**.
 
-1. In Safari, download:
-   - MelonLoader: the **x64 zip** from <https://github.com/LavaGang/MelonLoader/releases> (v0.7.3)
+1. Install MelonLoader with the ready-made pack: [launcher/melonloader/README.md](../launcher/melonloader/README.md)
+   (one zip with MelonLoader 0.7.3 and the .NET runtime it runs on, plus the config line).
+2. In Safari, download:
    - Starlight: `Starlight.dll` from <https://github.com/ThatFinnDev/Starlight/releases> (v4.0.3)
    - Ranching Together: from <https://www.nexusmods.com/slimerancher2/mods/118> or its Discord
-2. In the **Files** app, unzip MelonLoader. Then open the game's folder at
-   **Madeira › wine › drive_c › Program Files (x86) › Steam › steamapps › common ›**
-   the Slime Rancher 2 folder.
-3. Copy MelonLoader's contents into the game folder, so `version.dll` and the `MelonLoader` folder
-   sit next to the game's `.exe`.
-4. Make a `Mods` folder there if there isn't one, and put `Starlight.dll` and the Ranching Together
-   `.dll` in it.
-5. In Madeira, open the game's details page → **Advanced → This game's config** and add this line:
-
-   ```
-   env.WINEDLLOVERRIDES = version=n,b
-   ```
-
-   This tells Wine to load MelonLoader's `version.dll` from the game folder.
-6. Press **Play**. The first launch with MelonLoader is slow: it prepares its files on the phone
-   and downloads some of them, so it needs internet. Let it finish.
-7. Pass: a **Multiplayer** button appears on the main menu.
+3. In the **Files** app, open the game's folder (**SR2 Launcher › wine › drive_c › Program Files
+   (x86) › Steam › steamapps › common › Slime Rancher 2**). After MelonLoader's first start it has a
+   `Mods` folder; put `Starlight.dll` and the Ranching Together `.dll` in it.
+4. Press **Play**. Pass: a **Multiplayer** button appears on the main menu.
 
 ## E. Two phones on the same Wi-Fi (phase 3, needs a second device)
 
