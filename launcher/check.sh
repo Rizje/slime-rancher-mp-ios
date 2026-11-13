@@ -130,6 +130,7 @@ for p in "${fex_patches[@]}"; do
   git -C "$work/fex" apply "$p"
 done
 grep -q 'CodeBufferListOwner.load(std::memory_order_relaxed) == Self' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" &&
+  grep -q '\[inval-nested-skip\]' "$work/fex/Source/Windows/Common/InvalidationTracker.cpp" &&
   grep -q 'std::atomic<int32_t> CodeBufferListOwner {0};' "$work/fex/FEXCore/Source/Interface/Context/Context.h" &&
   grep -q 'inline int32_t gettid() {' "$work/fex/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h" &&
   grep -q '#include <FEXHeaderUtils/Syscalls.h>' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" ||

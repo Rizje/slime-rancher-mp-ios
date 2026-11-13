@@ -26,18 +26,23 @@ on its stack, the .NET finalizer and the tiered-compilation worker in
 The thread holding CodeBufferListLock is recorded; a call on that thread
 while it holds the lock logs "[codebuf-nested]" and skips the walk. What
 it names is FEX's own memory, never guest code.
+
+Second part (build 8 showed the nested call then standing on the lookup
+cache lock the outer InvalidateRange holds): InvalidateIntervalInternal
+skips the whole invalidation when this thread already holds the code
+invalidation lock ("[inval-nested-skip]"): it names FEX's own memory.
 ---
- ...xcore-code-buffer-list-walk-re-entry.patch | 111 ++++++++++++++++++
+ ...xcore-code-buffer-list-walk-re-entry.patch | 159 ++++++++++++++++++
  build/fex-patches/README.md                   |   1 +
- 2 files changed, 112 insertions(+)
+ 2 files changed, 160 insertions(+)
  create mode 100644 build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
 
 diff --git a/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
 new file mode 100644
-index 0000000..66ccb4d
+index 0000000..d9fa02a
 --- /dev/null
 +++ b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,159 @@
 +FEXCore: a code invalidation that re-enters the code buffer list walk skips it
 +
 +ContextImpl::InvalidateCodeBuffersCodeRange holds CodeBufferListLock (a
@@ -70,13 +75,26 @@ index 0000000..66ccb4d
 +behind the std::mutex, exclusive and with one waiter), the Mutex at
 +0xb724f0108 being the code invalidation lock 0x4a8 bytes before it.
 +
-+The memory a nested call names is FEX's own (the dying buffer, or the
-+list's storage growing in OnCodeBufferAllocated), never guest code, so the
-+lookup caches hold nothing for it. The thread that holds CodeBufferListLock
-+is now recorded (CodeBufferListOwner, its thread id), and a call that
-+arrives on that thread while it holds the lock logs "[codebuf-nested]" and
-+returns without the walk. InvalidateIntervalInternalLocked's other work
-+(the per-thread caches, the interval lists) is unchanged.
++The memory a nested call names is FEX's own (the dying buffer, the
++list's storage growing in OnCodeBufferAllocated, a lookup cache's entries
++released in GuestToHostMap::InvalidateRange), never guest code, so the
++lookup caches hold nothing for it. Two changes:
++
++1. InvalidationTracker::InvalidateIntervalInternal: when this thread
++   already holds the code invalidation lock (LockCodeInvalidationUnlessHeld
++   returns false), the call comes from FEX's own work under that hold, and
++   the invalidation is skipped with "[inval-nested-skip]". SR2 Launcher
++   build 8 had only change 2: the nested call then passed the code buffer
++   walk and stood on the next lock, the GuestToHostMap lock the outer
++   InvalidateRange holds, taken again in InvalidateThreadCachedCodeRange
++   -> LookupCache::InvalidateCacheRange ("[fexlock] STUCK write-wait on
++   mutex 0xb70d40230 ... owner tid=00e4", the same thread). The write-fault
++   path (HandleRWXAccessViolation) keeps its own handling.
++2. FEXCore: the thread that holds CodeBufferListLock is recorded
++   (CodeBufferListOwner, its thread id), and a call that arrives on that
++   thread while it holds the lock logs "[codebuf-nested]" and returns
++   without the walk. Kept as a second guard for callers that do not come
++   through InvalidateIntervalInternal.
 +
 +Applies on willfaust/FEX 1dc6ed4 (Madeira 0.2.0's FEX pin) after
 +0001-windows-ios-smc-traps-per-16k-host-page.patch. SR2 Launcher's patch;
@@ -149,15 +167,50 @@ index 0000000..66ccb4d
 + }
 + 
 + #if defined(FEX_IOS_HOST) && defined(_WIN32)
++diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
++index 073d558..6e2a442 100644
++--- a/Source/Windows/Common/InvalidationTracker.cpp
+++++ b/Source/Windows/Common/InvalidationTracker.cpp
++@@ -925,10 +925,27 @@ bool InvalidationTracker::LockCodeInvalidationUnlessHeld(const char* Path, uint6
++ 
++ void InvalidationTracker::InvalidateIntervalInternal(uint64_t Address, uint64_t Size) {
++   const bool Locked = LockCodeInvalidationUnlessHeld("invalidate", Address);
++-  InvalidateIntervalInternalLocked(Address, Size);
++-  if (Locked) {
++-    CTX.GetCodeInvalidationMutex().unlock();
+++  if (!Locked) {
+++    /* SR2 Launcher: this thread already holds the code invalidation lock, so no guest code runs on
+++     * it and this call comes from FEX's own work under that hold: memory it frees, allocates or
+++     * reprotects (a dead CodeBuffer's JIT memory destroyed by the code buffer walk, a lookup cache's
+++     * entries released in GuestToHostMap::InvalidateRange, the list's storage). Wine reports every
+++     * such operation back as a range to invalidate. Running that invalidation here re-enters FEX's
+++     * own non-recursive locks on this thread: CodeBufferListLock, then the GuestToHostMap lock the
+++     * outer invalidation holds (Slime Rancher 2 with MelonLoader's .NET 6 stood on each in turn, for
+++     * good). None of that memory holds guest code, so there is nothing to invalidate: skip it. The
+++     * write-fault path keeps its own handling. */
+++    static std::atomic<uint32_t> Skipped {0};
+++    const auto N = Skipped.fetch_add(1, std::memory_order_relaxed) + 1;
+++    if (N <= 16 || (N % 4096) == 0) {
+++      LogMan::Msg::EFmt("[inval-nested-skip] #{} invalidate {:#x}+{:#x}: under this thread's own code invalidation hold, "
+++                        "FEX's own memory, skipped",
+++                        N, Address, Size);
+++    }
+++    return;
++   }
+++  InvalidateIntervalInternalLocked(Address, Size);
+++  CTX.GetCodeInvalidationMutex().unlock();
++ }
++ 
++ void InvalidationTracker::InvalidateIntervalInternalLocked(uint64_t Address, uint64_t Size) {
 diff --git a/build/fex-patches/README.md b/build/fex-patches/README.md
-index f7e0fb2..8a2fe8e 100644
+index f7e0fb2..41bce5a 100644
 --- a/build/fex-patches/README.md
 +++ b/build/fex-patches/README.md
 @@ -12,6 +12,7 @@ These patches are for Madeira only and are not to be sent to FEX-Emu.
  | Patch | What it fixes |
  |---|---|
  | `0001-windows-ios-smc-traps-per-16k-host-page.patch` | Self-modifying-code write traps per 16 KB iOS host page, both modules (The Escapists 2, Project Zomboid) |
-+| `0002-fexcore-code-buffer-list-walk-re-entry.patch` | SR2 Launcher: a code invalidation that arrives on the thread walking the code buffer list (the walk freed a dead buffer, and the free was reported back) no longer waits on that thread's own lock (Slime Rancher 2 with MelonLoader's .NET 6) |
++| `0002-fexcore-code-buffer-list-walk-re-entry.patch` | SR2 Launcher: a code invalidation that arrives on the thread walking the code buffer list (the walk freed a dead buffer, and the free was reported back) is skipped instead of re-entering that thread's own locks (Slime Rancher 2 with MelonLoader's .NET 6) |
  
  A patch must apply on the current FEX pin. When the pin moves, rebase the
  patches onto it (or drop a patch the new pin already covers).

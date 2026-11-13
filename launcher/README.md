@@ -8,7 +8,7 @@ Madeira 0.2.0 built for Slime Rancher 2. It is Madeira's own app with six patche
 4. its own name and build stamp, and the memory settings the game needs,
 5. a fix that lets an IPA built by GitHub's macOS 27 runners start a game on iOS 26,
 6. a fix in FEX, the x86 translator, for a lock that stopped the game for good once MelonLoader's .NET
-   runtime started (build 8).
+   runtime started (builds 8 and 9).
 
 Built by GitHub Actions ([workflow](../.github/workflows/sr2-launcher.yml)) and published on this
 repository's [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releases) page as
@@ -123,7 +123,7 @@ Patch 0005 makes `server_pipe` use `pipe()` on iOS, as that build does. `check.s
 function outside a short list known to be on iOS 26 (in build 5, `pipe2` was the only one). The earlier
 guesses, the two diagnostics switches and Xcode's debug dylib, were not the cause.
 
-## Build 6 stood still once MelonLoader started .NET; build 8 removes the cause
+## Build 6 stood still once MelonLoader started .NET; builds 8 and 9 remove the cause
 
 With MelonLoader installed ([melonloader/README.md](melonloader/README.md)) build 6 showed
 "Waiting for its window" for as long as it was left (29 minutes), and MelonLoader's `Latest.log` ended
@@ -140,12 +140,14 @@ must be re-translated, which .NET's compiler causes constantly. While the game t
 list, a Wine thread exited, and the walk became the last holder of that thread's buffer and
 destroyed it. Destroying it frees the buffer's memory; Wine reports every free back to FEX as a
 range to re-translate; and that report arrived on the same thread, which took the list lock a second
-time and waited on itself. Patch 0006 makes FEX note which thread holds that lock, and a report that
-arrives on that thread while it holds it is skipped: it names FEX's own memory, never the game's
-code, so there is nothing to re-translate. The patch lives in `build/fex-patches/`, the folder
+time and waited on itself. Build 8 made FEX note which thread holds that lock and skip a report arriving on it; the game then
+stood on the next lock along the same path (the lookup cache the outer re-translation was clearing).
+Patch 0006 as of build 9 goes one level up: a report that arrives while the thread already holds
+FEX's code-invalidation lock is FEX's own doing (memory it frees or reprotects under that hold), never
+the game's code, so the whole nested re-translation is skipped (`[inval-nested-skip]` in the log). The patch lives in `build/fex-patches/`, the folder
 Madeira's build uses for its own FEX changes, so `xtajit64.dll` is rebuilt with it; `check.sh`
 fetches Madeira's FEX pin and proves the patches apply, and the workflow refuses an IPA whose
-`xtajit64.dll` lacks the patch's log tag `[codebuf-nested]`.
+`xtajit64.dll` lacks the patch's log tags.
 
 ## If it crashes
 
