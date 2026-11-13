@@ -1,12 +1,14 @@
 # SR2 Launcher
 
-Madeira 0.2.0 built for Slime Rancher 2. It is Madeira's own app with five patches:
+Madeira 0.2.0 built for Slime Rancher 2. It is Madeira's own app with six patches:
 
 1. a fix for the slowdown measured in this phone's logs,
 2. a counter that shows whether the fix worked,
 3. Slime Rancher 2's settings built in, so nothing has to be set by hand,
 4. its own name and build stamp, and the memory settings the game needs,
-5. a fix that lets an IPA built by GitHub's macOS 27 runners start a game on iOS 26.
+5. a fix that lets an IPA built by GitHub's macOS 27 runners start a game on iOS 26,
+6. a fix in FEX, the x86 translator, for a lock that stopped the game for good once MelonLoader's .NET
+   runtime started (build 7).
 
 Built by GitHub Actions ([workflow](../.github/workflows/sr2-launcher.yml)) and published on this
 repository's [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releases) page as
@@ -72,6 +74,7 @@ that already has them (this one does) is left alone, and so is `eco = 1` and eve
 | [0003](patches/0003-app-slime-rancher-2-settings-built-in.patch) | The settings above, recognised by the game's Steam App ID, folder or program | Edit them, or delete the config lines |
 | [0004](patches/0004-app-sr2-launcher-name-defaults-and-build-stamp.patch) | The name, the memory defaults, the build stamp in the log and Get Help, a line in Setup Guide › About; the app built as one executable, as Madeira's own 0.2.0 release is | — |
 | [0005](patches/0005-ntdll-no-pipe2-on-ios.patch) | Wine makes its server pipes with `pipe()` on iOS, never `pipe2()` (below) | — |
+| [0006](patches/0006-fex-patches-code-buffer-list-walk-re-entry.patch) | Adds `build/fex-patches/0002-…` to Madeira's own FEX patches, built into `xtajit64.dll`: a code invalidation that comes back to the thread already walking FEX's code buffer list no longer waits on that thread's own lock (below) | — |
 
 The `env.` switches go in the game's config like any other line. Why 0001 is safe: the window onto
 that page is set up once, onto memory Madeira keeps mapped for the whole session, so a read that
@@ -119,6 +122,30 @@ Patch 0005 makes `server_pipe` use `pipe()` on iOS, as that build does. `check.s
 `pipe2` call is built for iOS, and the workflow refuses an IPA that links weakly to any system
 function outside a short list known to be on iOS 26 (in build 5, `pipe2` was the only one). The earlier
 guesses, the two diagnostics switches and Xcode's debug dylib, were not the cause.
+
+## Build 6 stood still once MelonLoader started .NET; build 7 removes the cause
+
+With MelonLoader installed ([melonloader/README.md](melonloader/README.md)) build 6 showed
+"Waiting for its window" for as long as it was left (29 minutes), and MelonLoader's `Latest.log` ended
+after its two first lines, the ones that pick the .NET runtime. The game log showed where: the game
+thread was parked on a lock inside FEX, Madeira's x86 translator, with two frames of the same
+function on its stack, and the two .NET threads waited behind it. The line right before the stop:
+
+```
+[inval-nested] #1 invalidate 0x336c2d000: this thread already holds the code invalidation lock
+```
+
+FEX keeps a list of its code buffers (one per thread) and walks it under a plain lock when code
+must be re-translated, which .NET's compiler causes constantly. While the game thread walked that
+list, a Wine thread exited, and the walk became the last holder of that thread's buffer and
+destroyed it. Destroying it frees the buffer's memory; Wine reports every free back to FEX as a
+range to re-translate; and that report arrived on the same thread, which took the list lock a second
+time and waited on itself. Patch 0006 makes FEX note which thread holds that lock, and a report that
+arrives on that thread while it holds it is skipped: it names FEX's own memory, never the game's
+code, so there is nothing to re-translate. The patch lives in `build/fex-patches/`, the folder
+Madeira's build uses for its own FEX changes, so `xtajit64.dll` is rebuilt with it; `check.sh`
+fetches Madeira's FEX pin and proves the patches apply, and the workflow refuses an IPA whose
+`xtajit64.dll` lacks the patch's log tag `[codebuf-nested]`.
 
 ## If it crashes
 

@@ -16,6 +16,9 @@ IL2CPP games like this one MelonLoader runs on .NET 6. On Windows it installs th
 
 ## Install (on the iPhone)
 
+Needs SR2 Launcher **build 7** or later: build 6 stood at "Waiting for its window" for good once
+MelonLoader started its .NET runtime ([launcher/README.md](../README.md), patch 0006).
+
 1. In Safari, download `SR2-MelonLoader-0.7.3-pack.zip` from the newest
    **MelonLoader 0.7.3 pack** on the Releases page. In Files, tap it to unzip.
 2. Open the new folder **Slime Rancher 2 MelonLoader**. Select `winhttp.dll`, `MelonLoader` and
@@ -59,3 +62,10 @@ change the config line to `winhttp=n,b`.
 
 Send the Get Help files and `MelonLoader/Latest.log` from the game folder (Files app: long-press,
 Share).
+
+What has been found so far, in order:
+
+| Build | What happened | Cause and fix |
+|---|---|---|
+| 6, pack 2 (`version.dll`) | The game closed at once: `"version.dll" failed to initialize` | MelonLoader started before `msvcrt`; the pack's DLL is `winhttp.dll` since pack 3 (above) |
+| 6, pack 3 | "Waiting for its window" for good; `Latest.log` ends after the two lines that pick the .NET runtime | A lock in FEX taken twice by the game thread when .NET's code churn freed a dead code buffer; launcher patch 0006, build 7 |

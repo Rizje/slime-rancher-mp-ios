@@ -144,7 +144,8 @@ Ranching Together needs three things, all versions matching exactly:
 **MelonLoader 0.7.3**, **Starlight 4.0.3** and **Ranching Together**. It also requires Slime
 Rancher 2 version **1.3.0**.
 
-1. Install MelonLoader with the ready-made pack: [launcher/melonloader/README.md](../launcher/melonloader/README.md)
+1. Install SR2 Launcher build 7 or later (build 6 stands still once MelonLoader starts .NET: launcher
+   patch 0006), then MelonLoader with the ready-made pack: [launcher/melonloader/README.md](../launcher/melonloader/README.md)
    (one zip with MelonLoader 0.7.3 and the .NET runtime it runs on, plus the config line).
 2. In Safari, download:
    - Starlight: `Starlight.dll` from <https://github.com/ThatFinnDev/Starlight/releases> (v4.0.3)

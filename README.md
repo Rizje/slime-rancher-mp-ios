@@ -24,8 +24,8 @@ published on the [Releases](https://github.com/Rizje/slime-rancher-mp-ios/releas
 | Phase | What | State |
 |---|---|---|
 | 1 | Test on one phone: does the plain game run well enough? | Runs: 28–30 FPS, 14–20 once throttled ([test steps](docs/phase-1-on-device-test.md)) |
-| 1b | [SR2 Launcher](launcher/README.md): the fix and the settings built in | [Build 6](https://github.com/Rizje/slime-rancher-mp-ios/releases/tag/sr2-launcher-6) removes the start-up crash of builds 3 to 5 (launcher/README.md); next: one run on the phone |
-| 2 | Add MelonLoader and Ranching Together on one phone | After phase 1 passes |
+| 1b | [SR2 Launcher](launcher/README.md): the fix and the settings built in | [Build 6](https://github.com/Rizje/slime-rancher-mp-ios/releases/tag/sr2-launcher-6) runs the game well ("runs way better now"); build 7 adds the FEX fix MelonLoader needs |
+| 2 | Add MelonLoader and Ranching Together on one phone | MelonLoader starts as `winhttp.dll` ([pack](launcher/melonloader/README.md)); on build 6 it then stood still in FEX, fixed by launcher patch 0006 (build 7): next, one run with build 7 |
 | 3 | Two phones, same Wi-Fi, one hosts and one joins | After phase 2 passes |
 | 4 | Polish: touch layout, settings preset, setup guide, fixes sent to Madeira | Later |
 

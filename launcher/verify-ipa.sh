@@ -61,7 +61,12 @@ if [[ "$variant" == launcher ]]; then
   [[ "$name" == "SR2 Launcher" ]] || fail "display name '$name', expected SR2 Launcher"
   [[ "$stamp" == "0.2.0 · SR2 Launcher 1 · "* ]] || fail "build stamp '$stamp'"
   for m in "${markers[@]}"; do found "$m" || fail "'$m' is not in the app: a patch is missing from the build"; done
+  # Patch 0006 is in FEX's ARM64EC module, built by the windows runtime component from the FEX pin
+  # plus build/fex-patches. Its log tag is in that DLL and nowhere else.
+  grep -a -q -F -- "[codebuf-nested]" "$app/arm64ec-windows/xtajit64.dll" ||
+    fail "'[codebuf-nested]' is not in arm64ec-windows/xtajit64.dll: it was not rebuilt with build/fex-patches/0002"
 else
+  ! grep -a -q -F -- "[codebuf-nested]" "$app/arm64ec-windows/xtajit64.dll" || fail "the stock xtajit64.dll has patch 0006's code"
   [[ "$name" == Madeira ]] || fail "display name '$name', expected Madeira"
   [[ -z "$stamp" ]] || fail "stock build has a stamp '$stamp'"
   for m in "${markers[@]}"; do ! found "$m" || fail "'$m' is in the stock app"; done

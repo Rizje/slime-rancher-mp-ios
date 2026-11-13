@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 12:00:00 +0000
-Subject: [PATCH 2/5] ntdll: exception thread census
+Subject: [PATCH 2/6] ntdll: exception thread census
 
 One [exc-census] line every 5 s while the exception thread has work: messages
 served, handled, bad-access and breakpoint counts, the time from each receive

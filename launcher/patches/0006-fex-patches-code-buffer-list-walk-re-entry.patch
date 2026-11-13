@@ -1,0 +1,163 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH 6/6] fex-patches: a code invalidation that re-enters the code
+ buffer list walk
+
+build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch, built
+into xtajit64.dll (and xtajit.dll) by build/fex-arm64ec/build.sh through
+build/fex-patches/apply.sh, after Madeira's 0001.
+
+FEXCore's InvalidateCodeBuffersCodeRange holds CodeBufferListLock while it
+walks the code buffers. Releasing a buffer's shared_ptr there destroys it
+when its owning thread let go meanwhile (a thread that exited during the
+invalidation); ~CodeBuffer frees the JIT memory, Wine's ARM64EC ntdll
+reports the free to NotifyMemoryFree, and the invalidation that asks for
+comes back to InvalidateCodeBuffersCodeRange on the same thread, which
+locks CodeBufferListLock a second time and waits on itself for good, the
+code invalidation lock held. Slime Rancher 2 with MelonLoader's .NET 6:
+the game thread 00e8 with two frames of InvalidateIntervalInternalLocked
+on its stack, the .NET finalizer and the tiered-compilation worker in
+"[fexlock] STUCK read-wait", 29 minutes without progress, right after
+
+  [inval-nested] #1 invalidate 0x336c2d000: this thread already holds
+  the code invalidation lock
+
+The thread holding CodeBufferListLock is recorded; a call on that thread
+while it holds the lock logs "[codebuf-nested]" and skips the walk. What
+it names is FEX's own memory, never guest code.
+---
+ ...xcore-code-buffer-list-walk-re-entry.patch | 111 ++++++++++++++++++
+ build/fex-patches/README.md                   |   1 +
+ 2 files changed, 112 insertions(+)
+ create mode 100644 build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
+
+diff --git a/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
+new file mode 100644
+index 0000000..66ccb4d
+--- /dev/null
++++ b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
+@@ -0,0 +1,111 @@
++FEXCore: a code invalidation that re-enters the code buffer list walk skips it
++
++ContextImpl::InvalidateCodeBuffersCodeRange holds CodeBufferListLock (a
++plain std::mutex) while it walks the list of code buffers. For each one it
++takes a shared_ptr, invalidates the lookup cache, and lets the shared_ptr go.
++When the buffer's owning thread let go of its own reference meanwhile (a
++thread that exited while this invalidation ran), that release is the last
++one and destroys the CodeBuffer. ~CodeBuffer frees the JIT memory with
++NtFreeVirtualMemory, Wine's ARM64EC ntdll reports the free to
++NotifyMemoryFree, and that asks for an invalidation of the freed range:
++InvalidateAlignedInterval -> LockCodeInvalidationUnlessHeld (held by this
++thread already: the nested path, "[inval-nested]") ->
++InvalidateIntervalInternalLocked -> InvalidateCodeBuffersCodeRange, which
++locks CodeBufferListLock a second time on the same thread and waits on
++itself for good. Every other thread then parks behind the code invalidation
++lock the thread also holds.
++
++Seen with Slime Rancher 2 (Unity IL2CPP, x64) once MelonLoader 0.7.3 starts
++its .NET 6 runtime (SR2 Launcher, iPhone 16 Pro Max, iOS 26.2.1): the game
++thread 00e8 in NtWaitForAlertByThreadId with two frames of
++InvalidateIntervalInternalLocked+0x48 on its stack, the .NET finalizer and
++the tiered-compilation worker in "[fexlock] STUCK read-wait", no further
++progress for 29 minutes. The log line right before the stall:
++
++  [inval-nested] #1 invalidate 0x336c2d000: this thread already holds the
++  code invalidation lock, taken at ra=30bcdad7c ..., here=30bcd9e38
++
++0x336c2d000 is in the JIT pool: the dying buffer's memory. The log's
++[waiters] line names the lock: tid=00e8 addr=0xb724f05b2 (the SRW lock
++behind the std::mutex, exclusive and with one waiter), the Mutex at
++0xb724f0108 being the code invalidation lock 0x4a8 bytes before it.
++
++The memory a nested call names is FEX's own (the dying buffer, or the
++list's storage growing in OnCodeBufferAllocated), never guest code, so the
++lookup caches hold nothing for it. The thread that holds CodeBufferListLock
++is now recorded (CodeBufferListOwner, its thread id), and a call that
++arrives on that thread while it holds the lock logs "[codebuf-nested]" and
++returns without the walk. InvalidateIntervalInternalLocked's other work
++(the per-thread caches, the interval lists) is unchanged.
++
++Applies on willfaust/FEX 1dc6ed4 (Madeira 0.2.0's FEX pin) after
++0001-windows-ios-smc-traps-per-16k-host-page.patch. SR2 Launcher's patch;
++Madeira-only, not for FEX-Emu.
++
++diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
++index 3b3c7ac..15eca6a 100644
++--- a/FEXCore/Source/Interface/Context/Context.h
+++++ b/FEXCore/Source/Interface/Context/Context.h
++@@ -513,6 +513,9 @@ private:
++   std::atomic<uint64_t> MonoBackpatcherBlock;
++ 
++   std::mutex CodeBufferListLock;
+++  // SR2 Launcher: the thread holding CodeBufferListLock (FHU::Syscalls::gettid()), 0 while it is free.
+++  // InvalidateCodeBuffersCodeRange reads it to recognise its own re-entry; see there.
+++  std::atomic<int32_t> CodeBufferListOwner {0};
++   fextl::vector<std::weak_ptr<CPU::CodeBuffer>> CodeBufferList;
++ };
++ } // namespace FEXCore::Context
++diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
++index 8884ec0..d0fbd26 100644
++--- a/FEXCore/Source/Interface/Core/Core.cpp
+++++ b/FEXCore/Source/Interface/Core/Core.cpp
++@@ -669,7 +669,11 @@ void ContextImpl::OnCodeBufferAllocated(const fextl::shared_ptr<CPU::CodeBuffer>
++ 
++   {
++     std::scoped_lock lk {CodeBufferListLock};
+++    // SR2 Launcher: see InvalidateCodeBuffersCodeRange. The list's storage may grow here, and a
+++    // notification for that memory must not walk the list on this thread.
+++    CodeBufferListOwner.store(FHU::Syscalls::gettid(), std::memory_order_relaxed);
++     CodeBufferList.emplace_back(Buffer);
+++    CodeBufferListOwner.store(0, std::memory_order_relaxed);
++   }
++ }
++ 
++@@ -2358,7 +2362,28 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
++   FEXCORE_PROFILE_SCOPED("InvalidateCodeBuffersCodeRange");
++ 
++   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
+++  /* SR2 Launcher (Madeira on iOS): CodeBufferListLock is not recursive, and this walk can come back
+++   * to itself on the same thread. Releasing `Strong` below destroys a CodeBuffer whose owning thread
+++   * let go of it meanwhile (a thread that exited while this invalidation ran). Its destructor frees
+++   * the JIT memory, Wine's NtFreeVirtualMemory reports that free to NotifyMemoryFree, and the
+++   * invalidation it asks for arrives here with the list lock still held by this thread: it waited on
+++   * itself for good, and every other thread parked behind the code invalidation lock it also holds
+++   * (Slime Rancher 2 with MelonLoader's .NET 6: the game thread, the .NET finalizer and the
+++   * tiered-compilation worker, for 29 minutes). The memory a nested call names is FEX's own (the
+++   * dying buffer, or the list's storage growing in OnCodeBufferAllocated), never guest code, so
+++   * there is nothing in the lookup caches to invalidate for it: skip the walk. */
+++  const int32_t Self = FHU::Syscalls::gettid();
+++  if (CodeBufferListOwner.load(std::memory_order_relaxed) == Self) {
+++    static std::atomic<uint32_t> NestedCount {0};
+++    const auto N = NestedCount.fetch_add(1, std::memory_order_relaxed) + 1;
+++    if (N <= 16 || (N % 4096) == 0) {
+++      LogMan::Msg::EFmt("[codebuf-nested] #{} invalidate {:#x}+{:#x}: this thread is walking the code buffer list, skipped", N,
+++                        Start, Length);
+++    }
+++    return;
+++  }
++   std::scoped_lock lk {CodeBufferListLock};
+++  CodeBufferListOwner.store(Self, std::memory_order_relaxed);
++   auto it = CodeBufferList.begin();
++   while (it != CodeBufferList.end()) {
++     if (auto Strong = it->lock()) {
++@@ -2368,6 +2393,7 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
++       it = CodeBufferList.erase(it);
++     }
++   }
+++  CodeBufferListOwner.store(0, std::memory_order_relaxed);
++ }
++ 
++ #if defined(FEX_IOS_HOST) && defined(_WIN32)
+diff --git a/build/fex-patches/README.md b/build/fex-patches/README.md
+index f7e0fb2..8a2fe8e 100644
+--- a/build/fex-patches/README.md
++++ b/build/fex-patches/README.md
+@@ -12,6 +12,7 @@ These patches are for Madeira only and are not to be sent to FEX-Emu.
+ | Patch | What it fixes |
+ |---|---|
+ | `0001-windows-ios-smc-traps-per-16k-host-page.patch` | Self-modifying-code write traps per 16 KB iOS host page, both modules (The Escapists 2, Project Zomboid) |
++| `0002-fexcore-code-buffer-list-walk-re-entry.patch` | SR2 Launcher: a code invalidation that arrives on the thread walking the code buffer list (the walk freed a dead buffer, and the free was reported back) no longer waits on that thread's own lock (Slime Rancher 2 with MelonLoader's .NET 6) |
+ 
+ A patch must apply on the current FEX pin. When the pin moves, rebase the
+ patches onto it (or drop a patch the new pin already covers).

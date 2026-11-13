@@ -115,6 +115,29 @@ PY
 echo "== 3. Madeira's host checks, stock against patched"
 python3 "$here/tests/compare_host_checks.py" ${all[@]+"${all[@]}"} "$work/stock" "$work/patched"
 
+echo "== 5. the FEX patches apply, in order, on Madeira's FEX pin (patch 0006)"
+# build/fex-patches/apply.sh puts Madeira's 0001 and the launcher's 0002 on the FEX submodule before
+# xtajit64.dll is built. The submodule is not checked out here: fetch that one commit and try them.
+fex_pin="$(git -C "$work/patched" rev-parse "HEAD:FEX")"
+fex_url="$(git -C "$work/patched" config -f .gitmodules submodule.FEX.url)"
+git init -q "$work/fex" && git -C "$work/fex" fetch -q --depth 1 "$fex_url" "$fex_pin" &&
+  git -C "$work/fex" checkout -q FETCH_HEAD || { echo "check.sh: cannot fetch $fex_url $fex_pin" >&2; exit 1; }
+fex_patches=("$work"/patched/build/fex-patches/*.patch)
+[[ "${#fex_patches[@]}" == 2 && "$(basename "${fex_patches[1]}")" == 0002-fexcore-code-buffer-list-walk-re-entry.patch ]] ||
+  { echo "check.sh: expected Madeira's 0001 and the launcher's 0002 in build/fex-patches, got: ${fex_patches[*]}" >&2; exit 1; }
+for p in "${fex_patches[@]}"; do
+  git -C "$work/fex" apply --check "$p" || { echo "check.sh: $(basename "$p") does not apply on FEX $fex_pin" >&2; exit 1; }
+  git -C "$work/fex" apply "$p"
+done
+grep -q 'CodeBufferListOwner.load(std::memory_order_relaxed) == Self' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" &&
+  grep -q 'std::atomic<int32_t> CodeBufferListOwner {0};' "$work/fex/FEXCore/Source/Interface/Context/Context.h" &&
+  grep -q 'inline int32_t gettid() {' "$work/fex/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h" &&
+  grep -q '#include <FEXHeaderUtils/Syscalls.h>' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" ||
+  { echo "check.sh: the patched FEX source lacks what patch 0006 relies on" >&2; exit 1; }
+# A patch that is already in the tree is skipped, not applied twice: apply.sh's test for that.
+git -C "$work/fex" apply --reverse --check "${fex_patches[1]}" || { echo "check.sh: 0002 cannot be recognised as applied" >&2; exit 1; }
+echo "PASS: ${#fex_patches[@]} FEX patches apply on willfaust/FEX ${fex_pin:0:7}"
+
 if [[ "${SR2_REQUIRE_SWIFT:-0}" == 1 ]]; then
   echo "== 4. the recommended-settings Swift fixture, patched (--require-swift)"
   if ! (cd "$work/patched" && python3 tests/host/check-game-recommendations.py --require-swift); then

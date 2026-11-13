@@ -78,7 +78,7 @@ sampler's stuck-store check (a repair, not a diagnostic), so the launcher leaves
 
 ## SR2 Launcher
 
-[SR2 Launcher](../launcher/README.md) is Madeira 0.2.0 with five patches, built by GitHub Actions on
+[SR2 Launcher](../launcher/README.md) is Madeira 0.2.0 with six patches, built by GitHub Actions on
 Madeira's own CI image: reads of that page skip the query (switch: `env.MADEIRA_USD_PROBE = 1`
 restores it), an `[exc-census]` line every 5 s shows the exception thread's load, and the game's
 tested settings are built in. It installs over Madeira and keeps the game.

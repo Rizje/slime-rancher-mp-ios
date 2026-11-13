@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: SR2 Launcher <sr2-launcher@users.noreply.github.com>
 Date: Wed, 11 Nov 2026 12:00:00 +0000
-Subject: [PATCH 3/5] app: Slime Rancher 2 settings built in
+Subject: [PATCH 3/6] app: Slime Rancher 2 settings built in
 
 GameRecommendations.slimeRancher2, recognised by Steam App ID 1657630, the
 "Slime Rancher 2" Steam folder or SlimeRancher2.exe: the config the game ran
