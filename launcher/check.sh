@@ -131,7 +131,7 @@ for p in "${fex_patches[@]}"; do
 done
 grep -q 'CodeBufferListOwner.load(std::memory_order_relaxed) == Self' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" &&
   grep -q '\[inval-nested-skip\]' "$work/fex/Source/Windows/Common/InvalidationTracker.cpp" &&
-  grep -q 'Live.reserve(Count + 8);' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" &&
+  grep -q 'constexpr size_t BatchSize = 32;' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" &&
   grep -q 'Grown.reserve(Needed);' "$work/fex/FEXCore/Source/Interface/Core/Core.cpp" &&
   grep -q 'std::atomic<int32_t> CodeBufferListOwner {0};' "$work/fex/FEXCore/Source/Interface/Context/Context.h" &&
   grep -q 'inline int32_t gettid() {' "$work/fex/FEXHeaderUtils/FEXHeaderUtils/Syscalls.h" &&
@@ -140,6 +140,8 @@ grep -q 'CodeBufferListOwner.load(std::memory_order_relaxed) == Self' "$work/fex
 # A patch that is already in the tree is skipped, not applied twice: apply.sh's test for that.
 git -C "$work/fex" apply --reverse --check "${fex_patches[1]}" || { echo "check.sh: 0002 cannot be recognised as applied" >&2; exit 1; }
 echo "PASS: ${#fex_patches[@]} FEX patches apply on willfaust/FEX ${fex_pin:0:7}"
+# The patched code-buffer list functions, run under the waits seen on the phone; build 9's hang here.
+sh "$here/tests/codebuf_lock/run.sh" "$work/fex" 10
 
 if [[ "${SR2_REQUIRE_SWIFT:-0}" == 1 ]]; then
   echo "== 4. the recommended-settings Swift fixture, patched (--require-swift)"

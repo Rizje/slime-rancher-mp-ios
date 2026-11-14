@@ -148,7 +148,9 @@ the game's code, so the whole nested re-translation is skipped (`[inval-nested-s
 Build 9 then stopped once more: the game thread waited on FEX's list of code buffers while another
 thread held it and was itself waiting. Build 10 holds that list only for the few instructions that copy
 or append to it, never while anything can wait; the slow parts (clearing caches, freeing memory,
-growing the list) happen after it is released. The patch lives in `build/fex-patches/`, the folder
+growing the list) happen after it is released. [tests/codebuf_lock](tests/codebuf_lock/run.sh) runs
+the translator's real list functions under those conditions: build 9's hung in 10 of 30 runs, build
+10's finish every run (also under ThreadSanitizer). `check.sh` runs it on every build. The patch lives in `build/fex-patches/`, the folder
 Madeira's build uses for its own FEX changes, so `xtajit64.dll` is rebuilt with it; `check.sh`
 fetches Madeira's FEX pin and proves the patches apply, and the workflow refuses an IPA whose
 `xtajit64.dll` lacks the patch's log tags.

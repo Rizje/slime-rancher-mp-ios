@@ -33,21 +33,21 @@ skips the whole invalidation when this thread already holds the code
 invalidation lock ("[inval-nested-skip]"): it names FEX's own memory.
 
 Third part (build 9 parked the game thread on the code buffer list lock
-itself): the list lock is held only to copy live buffers and move dead
-entries into storage reserved beforehand, and to append within capacity;
-invalidation, reference release and the list's growth happen without it.
+itself): the list lock is held only to take batches of references into
+stack arrays and to append within capacity; invalidation, reference
+release and the list's growth happen without it.
 ---
- ...xcore-code-buffer-list-walk-re-entry.patch | 243 ++++++++++++++++++
+ ...xcore-code-buffer-list-walk-re-entry.patch | 259 ++++++++++++++++++
  build/fex-patches/README.md                   |   1 +
- 2 files changed, 244 insertions(+)
+ 2 files changed, 260 insertions(+)
  create mode 100644 build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
 
 diff --git a/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
 new file mode 100644
-index 0000000..f4cc3d2
+index 0000000..e33fc20
 --- /dev/null
 +++ b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
-@@ -0,0 +1,243 @@
+@@ -0,0 +1,259 @@
 +FEXCore: a code invalidation that re-enters the code buffer list walk skips it
 +
 +ContextImpl::InvalidateCodeBuffersCodeRange holds CodeBufferListLock (a
@@ -111,12 +111,23 @@ index 0000000..f4cc3d2
 +   frees JIT memory) and across the list's growth in OnCodeBufferAllocated
 +   (an allocation, which can wait on FEX's heap, Wine's virtual_mutex or
 +   the memory notification it raises). Now:
-+   - InvalidateCodeBuffersCodeRange reserves storage first, copies the
-+     live buffers and moves the dead entries out under the lock (no
-+     allocation, no waits), then invalidates and releases them after it.
++   - InvalidateCodeBuffersCodeRange takes batches of up to 32 references
++     out of the list into arrays on its stack, moving dead entries out
++     too, under the lock (no allocation, free or wait); it invalidates and
++     releases each batch after the lock is dropped. The index stays valid
++     between batches: every caller holds CodeInvalidationMutex
++     exclusively, so no other walk runs, and appends only go to the end.
++     A buffer appended mid-walk is new and empty, and nothing is compiled
++     into it before CodeInvalidationMutex is released.
 +   - OnCodeBufferAllocated appends under the lock only within capacity;
 +     to grow, it reserves larger storage without the lock, moves the
 +     entries over under it, and frees the old storage after it.
++
++   launcher/tests/codebuf_lock runs these two functions, copied from the
++   patched Core.cpp, under the waits seen on the phone (allocations and
++   frees that ask for the code invalidation lock, buffers dying in the
++   walk). Build 9's versions hung in 10 of 30 two-second runs; these
++   finish every run, also under ThreadSanitizer.
 +
 +Applies on willfaust/FEX 1dc6ed4 (Madeira 0.2.0's FEX pin) after
 +0001-windows-ios-smc-traps-per-16k-host-page.patch. SR2 Launcher's patch;
@@ -137,7 +148,7 @@ index 0000000..f4cc3d2
 + };
 + } // namespace FEXCore::Context
 +diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
-+index 8884ec0..c332e94 100644
++index 8884ec0..44c9606 100644
 +--- a/FEXCore/Source/Interface/Core/Core.cpp
 ++++ b/FEXCore/Source/Interface/Core/Core.cpp
 +@@ -667,10 +667,40 @@ void ContextImpl::OnCodeBufferAllocated(const fextl::shared_ptr<CPU::CodeBuffer>
@@ -184,7 +195,7 @@ index 0000000..f4cc3d2
 + }
 + 
 + void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer) {
-+@@ -2358,16 +2388,63 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
++@@ -2358,14 +2388,68 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
 +   FEXCORE_PROFILE_SCOPED("InvalidateCodeBuffersCodeRange");
 + 
 +   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
@@ -216,46 +227,51 @@ index 0000000..f4cc3d2
 ++    }
 ++    return;
 ++  }
-++  /* SR2 Launcher: the list lock is held only to copy out the live buffers (into storage reserved
-++   * beforehand, so nothing allocates under it) and to drop dead entries. The lookup caches are
-++   * invalidated, and the copied references released (which can destroy a CodeBuffer and free its JIT
-++   * memory), after the lock is dropped. Before, both happened under the lock: a destroyed buffer's free
-++   * came back here on this thread, and any wait inside InvalidateRange held every other thread out of
-++   * the list (Slime Rancher 2 with MelonLoader's .NET 6, build 9: the game thread parked on this lock
-++   * for good, with the code invalidation lock held). */
-++  fextl::vector<std::shared_ptr<CPU::CodeBuffer>> Live;
-++  fextl::vector<std::weak_ptr<CPU::CodeBuffer>> Dead; // released after the lock, like Live
-++  for (;;) {
-++    size_t Count = 0;
+++  /* SR2 Launcher: CodeBufferListLock is held only to take a batch of references out of the list and
+++   * to drop dead entries: fixed-size arrays on the stack, so nothing allocates, frees or waits under it.
+++   * The lookup caches are invalidated, and the references released (which can destroy a CodeBuffer and
+++   * free its JIT memory), after the lock is dropped, one batch at a time. Before, both happened under
+++   * the lock: a destroyed buffer's free came back here on this thread, and any wait inside
+++   * InvalidateRange held every other thread out of the list (Slime Rancher 2 with MelonLoader's .NET 6,
+++   * build 9: the game thread parked on this lock for good, with the code invalidation lock held).
+++   *
+++   * Index stays valid across batches: every caller holds CodeInvalidationMutex exclusively, so no
+++   * other walk runs, and OnCodeBufferAllocated only appends. A buffer appended during the walk is new
+++   * and empty; nothing can be compiled into it before CodeInvalidationMutex is released, because
+++   * compilation holds it shared. */
+++  constexpr size_t BatchSize = 32;
+++  std::shared_ptr<CPU::CodeBuffer> Live[BatchSize];
+++  std::weak_ptr<CPU::CodeBuffer> Dead[BatchSize];
+++  size_t Index = 0;
+++  bool Done = false;
+++  while (!Done) {
+++    size_t LiveCount = 0, DeadCount = 0;
 ++    {
 ++      std::scoped_lock lk {CodeBufferListLock};
-++      Count = CodeBufferList.size();
-++      if (Count <= Live.capacity() && Count <= Dead.capacity()) {
-++        CodeBufferListOwner.store(Self, std::memory_order_relaxed);
-++        auto it = CodeBufferList.begin();
-++        while (it != CodeBufferList.end()) {
-++          if (auto Strong = it->lock()) {
-++            Live.emplace_back(std::move(Strong)); // within capacity: no allocation
-++            it++;
-++          } else {
-++            Dead.emplace_back(std::move(*it)); // within capacity: no allocation; the entry left is empty
-++            it = CodeBufferList.erase(it);
-++          }
+++      CodeBufferListOwner.store(Self, std::memory_order_relaxed);
+++      while (Index < CodeBufferList.size() && LiveCount < BatchSize && DeadCount < BatchSize) {
+++        if (auto Strong = CodeBufferList[Index].lock()) {
+++          Live[LiveCount++] = std::move(Strong);
+++          Index++;
+++        } else {
+++          Dead[DeadCount++] = std::move(CodeBufferList[Index]); // the entry left behind is empty
+++          CodeBufferList.erase(CodeBufferList.begin() + Index);   // moves empty-or-live weak_ptrs: no frees
 ++        }
-++        CodeBufferListOwner.store(0, std::memory_order_relaxed);
-++        break;
 ++      }
+++      Done = Index >= CodeBufferList.size();
+++      CodeBufferListOwner.store(0, std::memory_order_relaxed);
+++    }
+++    for (size_t i = 0; i < LiveCount; i++) {
+++      Live[i]->LookupCache->InvalidateRange(Start, Length);
+++    }
+++    for (size_t i = 0; i < LiveCount; i++) {
+++      Live[i].reset(); // may destroy a CodeBuffer: outside the list lock
+++    }
+++    for (size_t i = 0; i < DeadCount; i++) {
+++      Dead[i].reset();
 +     }
-++    Live.reserve(Count + 8);
-++    Dead.reserve(Count + 8);
-++  }
-++  for (auto& Buffer : Live) {
-++    Buffer->LookupCache->InvalidateRange(Start, Length);
 +   }
-++  // Live and Dead are released here, without the list lock.
 + }
-+ 
-+ #if defined(FEX_IOS_HOST) && defined(_WIN32)
 +diff --git a/Source/Windows/Common/InvalidationTracker.cpp b/Source/Windows/Common/InvalidationTracker.cpp
 +index 073d558..6e2a442 100644
 +--- a/Source/Windows/Common/InvalidationTracker.cpp
