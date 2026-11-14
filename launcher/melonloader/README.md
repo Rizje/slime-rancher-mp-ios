@@ -16,7 +16,7 @@ IL2CPP games like this one MelonLoader runs on .NET 6. On Windows it installs th
 
 ## Install (on the iPhone)
 
-Needs SR2 Launcher **build 9** or later: build 6 stood at "Waiting for its window" for good once
+Needs SR2 Launcher **build 10** or later: build 6 stood at "Waiting for its window" for good once
 MelonLoader started its .NET runtime ([launcher/README.md](../README.md), patch 0006).
 
 1. In Safari, download `SR2-MelonLoader-0.7.3-pack.zip` from the newest
@@ -70,3 +70,5 @@ What has been found so far, in order:
 | 6, pack 2 (`version.dll`) | The game closed at once: `"version.dll" failed to initialize` | MelonLoader started before `msvcrt`; the pack's DLL is `winhttp.dll` since pack 3 (above) |
 | 6, pack 3 | "Waiting for its window" for good; `Latest.log` ends after the two lines that pick the .NET runtime | A lock in FEX taken twice by the game thread when .NET's code churn freed a dead code buffer; launcher patch 0006, build 8 |
 | 8, pack 3 | The same screen; the log shows the fix working and the thread then stopping on the next lock of the same kind | Patch 0006 now skips the whole nested re-translation; build 9 |
+| 9, pack 3 | The same screen after about 10 s of .NET; the game thread waits on FEX's code buffer list held by a blocked thread | Patch 0006 holds that list only while nothing can wait; build 10 |
+| 9, with `DOTNET_TieredCompilation = 0` and `DOTNET_EnableWriteXorExecute = 0` | "Madeira Dock stopped" before a window | Those two lines made it worse: leave them out |

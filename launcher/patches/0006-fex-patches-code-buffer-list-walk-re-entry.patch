@@ -31,18 +31,23 @@ Second part (build 8 showed the nested call then standing on the lookup
 cache lock the outer InvalidateRange holds): InvalidateIntervalInternal
 skips the whole invalidation when this thread already holds the code
 invalidation lock ("[inval-nested-skip]"): it names FEX's own memory.
+
+Third part (build 9 parked the game thread on the code buffer list lock
+itself): the list lock is held only to copy live buffers and move dead
+entries into storage reserved beforehand, and to append within capacity;
+invalidation, reference release and the list's growth happen without it.
 ---
- ...xcore-code-buffer-list-walk-re-entry.patch | 159 ++++++++++++++++++
+ ...xcore-code-buffer-list-walk-re-entry.patch | 243 ++++++++++++++++++
  build/fex-patches/README.md                   |   1 +
- 2 files changed, 160 insertions(+)
+ 2 files changed, 244 insertions(+)
  create mode 100644 build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
 
 diff --git a/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
 new file mode 100644
-index 0000000..d9fa02a
+index 0000000..f4cc3d2
 --- /dev/null
 +++ b/build/fex-patches/0002-fexcore-code-buffer-list-walk-re-entry.patch
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,243 @@
 +FEXCore: a code invalidation that re-enters the code buffer list walk skips it
 +
 +ContextImpl::InvalidateCodeBuffersCodeRange holds CodeBufferListLock (a
@@ -95,6 +100,23 @@ index 0000000..d9fa02a
 +   thread while it holds the lock logs "[codebuf-nested]" and returns
 +   without the walk. Kept as a second guard for callers that do not come
 +   through InvalidateIntervalInternal.
++3. FEXCore: CodeBufferListLock is held only while nothing can block.
++   SR2 Launcher build 9 (changes 1 and 2) got past both earlier stops and
++   then parked the game thread on CodeBufferListLock itself, inside
++   InvalidateCodeBuffersCodeRange with the code invalidation lock held,
++   no nested frame on its stack, the .NET compiler thread and the new
++   thread-pool workers queued behind it. Under the old code the list lock
++   was held across InvalidateRange (a wait on each buffer's lookup cache
++   lock), across releasing buffer references (a CodeBuffer destructor
++   frees JIT memory) and across the list's growth in OnCodeBufferAllocated
++   (an allocation, which can wait on FEX's heap, Wine's virtual_mutex or
++   the memory notification it raises). Now:
++   - InvalidateCodeBuffersCodeRange reserves storage first, copies the
++     live buffers and moves the dead entries out under the lock (no
++     allocation, no waits), then invalidates and releases them after it.
++   - OnCodeBufferAllocated appends under the lock only within capacity;
++     to grow, it reserves larger storage without the lock, moves the
++     entries over under it, and frees the old storage after it.
 +
 +Applies on willfaust/FEX 1dc6ed4 (Madeira 0.2.0's FEX pin) after
 +0001-windows-ios-smc-traps-per-16k-host-page.patch. SR2 Launcher's patch;
@@ -115,25 +137,65 @@ index 0000000..d9fa02a
 + };
 + } // namespace FEXCore::Context
 +diff --git a/FEXCore/Source/Interface/Core/Core.cpp b/FEXCore/Source/Interface/Core/Core.cpp
-+index 8884ec0..d0fbd26 100644
++index 8884ec0..c332e94 100644
 +--- a/FEXCore/Source/Interface/Core/Core.cpp
 ++++ b/FEXCore/Source/Interface/Core/Core.cpp
-+@@ -669,7 +669,11 @@ void ContextImpl::OnCodeBufferAllocated(const fextl::shared_ptr<CPU::CodeBuffer>
-+ 
-+   {
-+     std::scoped_lock lk {CodeBufferListLock};
-++    // SR2 Launcher: see InvalidateCodeBuffersCodeRange. The list's storage may grow here, and a
-++    // notification for that memory must not walk the list on this thread.
-++    CodeBufferListOwner.store(FHU::Syscalls::gettid(), std::memory_order_relaxed);
-+     CodeBufferList.emplace_back(Buffer);
-++    CodeBufferListOwner.store(0, std::memory_order_relaxed);
++@@ -667,10 +667,40 @@ void ContextImpl::OnCodeBufferAllocated(const fextl::shared_ptr<CPU::CodeBuffer>
++     Symbols.RegisterJITSpace(Buffer->Ptr, Buffer->AllocatedSize);
 +   }
++ 
++-  {
++-    std::scoped_lock lk {CodeBufferListLock};
++-    CodeBufferList.emplace_back(Buffer);
+++  /* SR2 Launcher: CodeBufferListLock is held only while nothing can block, so a thread waiting on it
+++   * (InvalidateCodeBuffersCodeRange, under the code invalidation lock) never waits on a thread that is
+++   * itself waiting. Growing the list allocates, and an allocation can block (FEX's heap, Wine's
+++   * virtual_mutex, the memory notification it raises, which may want the code invalidation lock), so the
+++   * larger storage is made here without the lock, filled under it by moves (no allocation), and the old
+++   * storage is freed after the lock is dropped. */
+++  const int32_t Self = FHU::Syscalls::gettid();
+++  fextl::vector<std::weak_ptr<CPU::CodeBuffer>> Grown;
+++  for (;;) {
+++    size_t Needed = 0;
+++    {
+++      std::scoped_lock lk {CodeBufferListLock};
+++      if (CodeBufferList.size() < CodeBufferList.capacity()) {
+++        CodeBufferListOwner.store(Self, std::memory_order_relaxed);
+++        CodeBufferList.emplace_back(Buffer); // within capacity: no allocation
+++        CodeBufferListOwner.store(0, std::memory_order_relaxed);
+++        return;
+++      }
+++      if (Grown.capacity() > CodeBufferList.size()) {
+++        CodeBufferListOwner.store(Self, std::memory_order_relaxed);
+++        for (auto& Entry : CodeBufferList) {
+++          Grown.emplace_back(std::move(Entry)); // within Grown's capacity: no allocation
+++        }
+++        Grown.emplace_back(Buffer);
+++        CodeBufferList.swap(Grown); // Grown now holds the old storage and moved-from entries
+++        CodeBufferListOwner.store(0, std::memory_order_relaxed);
+++        break;
+++      }
+++      Needed = std::max<size_t>(CodeBufferList.size() * 2, 64);
+++    }
+++    Grown.clear();
+++    Grown.reserve(Needed);
++   }
+++  // Grown (the old storage) is released here, without the lock.
 + }
 + 
-+@@ -2358,7 +2362,28 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
++ void ContextImpl::ClearCodeCache(FEXCore::Core::InternalThreadState* Thread, bool NewCodeBuffer) {
++@@ -2358,16 +2388,63 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
 +   FEXCORE_PROFILE_SCOPED("InvalidateCodeBuffersCodeRange");
 + 
 +   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.try_lock() == false, "CodeInvalidationMutex needs to be unique_locked here");
++-  std::scoped_lock lk {CodeBufferListLock};
++-  auto it = CodeBufferList.begin();
++-  while (it != CodeBufferList.end()) {
++-    if (auto Strong = it->lock()) {
++-      Strong->LookupCache->InvalidateRange(Start, Length);
++-      it++;
++-    } else {
++-      it = CodeBufferList.erase(it);
 ++  /* SR2 Launcher (Madeira on iOS): CodeBufferListLock is not recursive, and this walk can come back
 ++   * to itself on the same thread. Releasing `Strong` below destroys a CodeBuffer whose owning thread
 ++   * let go of it meanwhile (a thread that exited while this invalidation ran). Its destructor frees
@@ -154,16 +216,43 @@ index 0000000..d9fa02a
 ++    }
 ++    return;
 ++  }
-+   std::scoped_lock lk {CodeBufferListLock};
-++  CodeBufferListOwner.store(Self, std::memory_order_relaxed);
-+   auto it = CodeBufferList.begin();
-+   while (it != CodeBufferList.end()) {
-+     if (auto Strong = it->lock()) {
-+@@ -2368,6 +2393,7 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
-+       it = CodeBufferList.erase(it);
+++  /* SR2 Launcher: the list lock is held only to copy out the live buffers (into storage reserved
+++   * beforehand, so nothing allocates under it) and to drop dead entries. The lookup caches are
+++   * invalidated, and the copied references released (which can destroy a CodeBuffer and free its JIT
+++   * memory), after the lock is dropped. Before, both happened under the lock: a destroyed buffer's free
+++   * came back here on this thread, and any wait inside InvalidateRange held every other thread out of
+++   * the list (Slime Rancher 2 with MelonLoader's .NET 6, build 9: the game thread parked on this lock
+++   * for good, with the code invalidation lock held). */
+++  fextl::vector<std::shared_ptr<CPU::CodeBuffer>> Live;
+++  fextl::vector<std::weak_ptr<CPU::CodeBuffer>> Dead; // released after the lock, like Live
+++  for (;;) {
+++    size_t Count = 0;
+++    {
+++      std::scoped_lock lk {CodeBufferListLock};
+++      Count = CodeBufferList.size();
+++      if (Count <= Live.capacity() && Count <= Dead.capacity()) {
+++        CodeBufferListOwner.store(Self, std::memory_order_relaxed);
+++        auto it = CodeBufferList.begin();
+++        while (it != CodeBufferList.end()) {
+++          if (auto Strong = it->lock()) {
+++            Live.emplace_back(std::move(Strong)); // within capacity: no allocation
+++            it++;
+++          } else {
+++            Dead.emplace_back(std::move(*it)); // within capacity: no allocation; the entry left is empty
+++            it = CodeBufferList.erase(it);
+++          }
+++        }
+++        CodeBufferListOwner.store(0, std::memory_order_relaxed);
+++        break;
+++      }
 +     }
+++    Live.reserve(Count + 8);
+++    Dead.reserve(Count + 8);
+++  }
+++  for (auto& Buffer : Live) {
+++    Buffer->LookupCache->InvalidateRange(Start, Length);
 +   }
-++  CodeBufferListOwner.store(0, std::memory_order_relaxed);
+++  // Live and Dead are released here, without the list lock.
 + }
 + 
 + #if defined(FEX_IOS_HOST) && defined(_WIN32)
