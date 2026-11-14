@@ -5,7 +5,7 @@
 #
 #   sh launcher/tests/codebuf_lock/run.sh FEX_CHECKOUT [RUNS]
 #
-# Build 9's versions of these functions hung in 10 of 30 runs; build 10's finished 30 of 30.
+# Build 9's versions of these functions hung in 10 of 30 runs; build 11's finished 30 of 30.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 fex="$1"; runs="${2:-10}"
